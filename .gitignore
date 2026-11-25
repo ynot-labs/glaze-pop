@@ -1,0 +1,7 @@
+# Godot 4+ specific ignores
+.godot/
+.nomedia
+*.blend1
+*.tmp
+build/
+.DS_Store

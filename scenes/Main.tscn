@@ -1,0 +1,18 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main_game.gd" id="1_main"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+
+[node name="StudioKeyLight" type="DirectionalLight3D" parent="."]
+
+[node name="StudioFillLight" type="DirectionalLight3D" parent="."]
+
+[node name="StudioCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.92, 0.39, 0, -0.39, 0.92, 0, 6.8, 16.5)
+fov = 34.0
+
+[node name="UILayer" type="CanvasLayer" parent="."]
