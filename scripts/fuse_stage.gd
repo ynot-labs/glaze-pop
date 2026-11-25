@@ -754,14 +754,13 @@ func _update_camera(delta: float) -> void:
 	camera.fov = 34.0 # RD-SPEC-03 1.1 exact FOV = 34°!
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
 
-	# Sculpture bounding sphere strictly fills 65%-75% of stage width with clean vertical breathing room!
+	# Heroic Cube-Smash Framing: Sculpture fills ~78% of stage width (BIG, BOLD, CHUNKY!)
 	var half_tan_y: float = tan(deg_to_rad(17.0))
 	var half_tan_x: float = half_tan_y * aspect
-	var dist_for_w: float = (bound_radius / 0.35) / maxf(half_tan_x, 0.14)
-	var dist_for_h: float = (bound_radius * 2.42) / half_tan_y
-	var dist: float = maxf(17.2, maxf(dist_for_w, dist_for_h)) / zoom_scale
-	var look_at_pt := Vector3(0.0, -0.32, 0.0)
-	# 3/4俯视倾角 ~28° (RD-SPEC-03 1.1!)
+	var dist_for_w: float = (bound_radius / 0.42) / maxf(half_tan_x, 0.14)
+	var dist_for_h: float = (bound_radius * 2.05) / half_tan_y
+	var dist: float = maxf(13.8, maxf(dist_for_w, dist_for_h)) / zoom_scale
+	var look_at_pt := Vector3(0.0, -0.22, 0.0)
 	var elev_rad: float = deg_to_rad(24.0)
 	var desired := look_at_pt + Vector3(0.0, sin(elev_rad), cos(elev_rad)) * dist
 
@@ -850,8 +849,10 @@ func _process_pending_hits(delta: float) -> void:
 func _pick_best_target(cid: int, min_facing: float) -> Vector3i:
 	var best_pos := Vector3i(999, 999, 999)
 	var best_score: float = -1e9
+	var fallback_pos := Vector3i(999, 999, 999)
+	var fallback_score: float = -1e9
 	var cam_pos: Vector3 = camera.global_position if camera else Vector3(0, 5, 16)
-	var center_w: Vector3 = model_tilt_root.global_position
+	var pivot_basis: Basis = orbit_pivot.global_transform.basis.orthonormalized()
 
 	for p: Vector3i in exposed_set.keys():
 		if reserved_targets.has(p) or not voxels.has(p):
@@ -864,16 +865,32 @@ func _pick_best_target(cid: int, min_facing: float) -> Vector3i:
 			continue
 
 		var wp: Vector3 = _grid_to_world(p)
-		var radial: Vector3 = (wp - center_w).normalized()
-		var to_cam: Vector3 = (cam_pos - center_w).normalized()
-		var facing: float = radial.dot(to_cam)
-		if facing < min_facing:
-			continue
+		var to_cam: Vector3 = (cam_pos - wp).normalized()
 
-		var score: float = facing * 4.2 + (6.5 if is_core else 0.0) + float(p.y) * 0.05
-		if score > best_score:
-			best_score = score
-			best_pos = p
+		# Compute BEST exposed outward face normal dot product toward camera!
+		# Fixes the "last/bottom-center block unshootable at any yaw" bug 100%:
+		# An exposed standalone/bottom/center block has +Y/+Z/+X exposed faces -> best_face_dot >= +0.4!
+		var best_face_dot: float = -1.0
+		for dir in DIRS6:
+			if not voxels.has(p + dir):
+				var world_n: Vector3 = (pivot_basis * Vector3(dir)).normalized()
+				best_face_dot = maxf(best_face_dot, world_n.dot(to_cam))
+
+		var score: float = best_face_dot * 5.0 + (6.5 if is_core else 0.0) + float(p.y) * 0.04
+		if score > fallback_score:
+			fallback_score = score
+			fallback_pos = p
+
+		if best_face_dot >= min_facing:
+			if score > best_score:
+				best_score = score
+				best_pos = p
+
+	if best_pos != Vector3i(999, 999, 999):
+		return best_pos
+	# Final safety net: when <= 10 voxels remain on the whole sculpture, NEVER strand the last block!
+	if voxels.size() <= 10 and fallback_pos != Vector3i(999, 999, 999):
+		return fallback_pos
 	return best_pos
 
 

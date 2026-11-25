@@ -48,20 +48,20 @@ func setup(p_audio: ArcadeAudio, p_services: StoreServices, p_repo: LevelReposit
 	gray_mat.albedo_color = Color(0.76, 0.80, 0.86)
 	gray_mat.roughness = 0.62
 
-	# Clean cool-architectural light blue-gray backdrop (#DCE6F2 -> #F4F8FD)
+	# Rich Cube-Smash Royal-Blue Arcade Studio Backdrop (zero glare, vibrant pop!)
 	var bg := ColorRect.new()
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0.875, 0.914, 0.957, 1.0)
+	bg.color = Color(0.045, 0.200, 0.580, 1.0)
 	add_child(bg)
 
-	var wrap := CenterContainer.new()
-	wrap.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(wrap)
+	var lobby_wrap := CenterContainer.new()
+	lobby_wrap.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(lobby_wrap)
 
 	var shell := VBoxContainer.new()
 	shell.custom_minimum_size = Vector2(540, 960)
 	shell.add_theme_constant_override("separation", 12)
-	wrap.add_child(shell)
+	lobby_wrap.add_child(shell)
 
 	var pad := MarginContainer.new()
 	pad.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -149,10 +149,10 @@ func setup(p_audio: ArcadeAudio, p_services: StoreServices, p_repo: LevelReposit
 	var lbl_en := Label.new()
 	lbl_en.text = "FUSE SMASH!"
 	lbl_en.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl_en.add_theme_font_size_override("font_size", 44)
-	lbl_en.add_theme_color_override("font_color", Color(0.114, 0.388, 0.929))
-	lbl_en.add_theme_color_override("font_outline_color", Color.WHITE)
-	lbl_en.add_theme_constant_override("outline_size", 10)
+	lbl_en.add_theme_font_size_override("font_size", 46)
+	lbl_en.add_theme_color_override("font_color", Color(1.0, 0.85, 0.08))
+	lbl_en.add_theme_color_override("font_outline_color", Color(0.02, 0.09, 0.30))
+	lbl_en.add_theme_constant_override("outline_size", 11)
 	if p_font:
 		lbl_en.add_theme_font_override("font", p_font)
 	logo_box.add_child(lbl_en)
@@ -168,7 +168,7 @@ func setup(p_audio: ArcadeAudio, p_services: StoreServices, p_repo: LevelReposit
 	# --- 3. LIVE 3D FLOATING ISLAND HERO SHOWCASE ---
 	var island_card := PanelContainer.new()
 	island_card.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	island_card.add_theme_stylebox_override("panel", _mk_box(Color(0.955, 0.975, 1.0, 0.92), 26, 14, Color.WHITE, 2))
+	island_card.add_theme_stylebox_override("panel", _mk_box(Color(0.065, 0.255, 0.680, 0.85), 26, 14, Color(0.24, 0.55, 1.0, 0.70), 2))
 	root_v.add_child(island_card)
 
 	var isl_overlay := Control.new()
@@ -236,7 +236,7 @@ func setup(p_audio: ArcadeAudio, p_services: StoreServices, p_repo: LevelReposit
 	)
 	isl_top.add_child(paint_btn)
 
-	lbl_island_prog = _mk_lbl("浮空岛地标 0/5 · 能量 0/500", 12, Color(0.32, 0.40, 0.52), p_font)
+	lbl_island_prog = _mk_lbl("浮空岛地标 0/5 · 能量 0/500", 12, Color(0.86, 0.94, 1.0), p_font)
 	lbl_island_prog.anchor_left = 0.0; lbl_island_prog.anchor_right = 1.0
 	lbl_island_prog.anchor_top = 1.0; lbl_island_prog.anchor_bottom = 1.0
 	lbl_island_prog.offset_top = -30; lbl_island_prog.offset_bottom = -8

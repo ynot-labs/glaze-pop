@@ -171,20 +171,20 @@ func _setup_version_b_lighting() -> void:
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.88, 0.92, 0.99)
-	env.ambient_light_energy = 0.36
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_exposure = 1.02
+	env.ambient_light_color = Color(0.42, 0.58, 0.95)
+	env.ambient_light_energy = 0.24
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
+	env.tonemap_exposure = 1.08
 	world_env.environment = env
 
-	key_light.rotation_degrees = Vector3(-40.0, -34.0, 0.0)
-	key_light.light_color = Color(1.0, 0.99, 0.97)
-	key_light.light_energy = 1.42
+	key_light.rotation_degrees = Vector3(-42.0, -32.0, 0.0)
+	key_light.light_color = Color(1.0, 0.99, 0.96)
+	key_light.light_energy = 1.65
 	key_light.shadow_enabled = true
-	key_light.shadow_opacity = 0.40
-	key_light.shadow_blur = 1.8
-	key_light.shadow_bias = 0.03
-	key_light.shadow_normal_bias = 1.1
+	key_light.shadow_opacity = 0.48
+	key_light.shadow_blur = 1.6
+	key_light.shadow_bias = 0.025
+	key_light.shadow_normal_bias = 1.0
 	key_light.directional_shadow_max_distance = 30.0
 
 
@@ -287,8 +287,10 @@ func _build_version_b_hud() -> void:
 
 	lbl_level = Label.new()
 	lbl_level.text = "LEVEL 1"
-	lbl_level.add_theme_font_size_override("font_size", 24)
-	lbl_level.add_theme_color_override("font_color", Color(0.118, 0.161, 0.231))
+	lbl_level.add_theme_font_size_override("font_size", 26)
+	lbl_level.add_theme_color_override("font_color", Color.WHITE)
+	lbl_level.add_theme_color_override("font_outline_color", Color(0.02, 0.08, 0.28))
+	lbl_level.add_theme_constant_override("outline_size", 6)
 	lv_row.add_child(lbl_level)
 
 	difficulty_badge = PanelContainer.new()
@@ -385,9 +387,10 @@ func _build_version_b_hud() -> void:
 		var frame := PanelContainer.new()
 		frame.custom_minimum_size = Vector2(82, 82)
 		frame.visible = (i < FuseStage.BASE_SLOTS)
+		# Cube Smash Deep Navy Recessed Slot (high contrast so jewel cannons pop!)
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.796, 0.835, 0.882, 0.94) # #CBD5E1 exact!
-		sb.border_color = Color(0.70, 0.76, 0.84, 0.95)
+		sb.bg_color = Color(0.024, 0.095, 0.285, 0.90)
+		sb.border_color = Color(0.180, 0.455, 0.920, 0.85)
 		sb.set_border_width_all(2)
 		sb.set_corner_radius_all(16)
 		sb.set_content_margin_all(4)
@@ -429,7 +432,7 @@ func _build_version_b_hud() -> void:
 
 	var queue_card := PanelContainer.new()
 	queue_card.custom_minimum_size = Vector2(466, 192)
-	queue_card.add_theme_stylebox_override("panel", _make_card_box(Color.WHITE, 20, 14, Color(0.84, 0.89, 0.95), 2))
+	queue_card.add_theme_stylebox_override("panel", _make_card_box(Color(0.032, 0.118, 0.340, 0.92), 20, 14, Color(0.18, 0.46, 0.92, 0.80), 2))
 	queue_center.add_child(queue_card)
 
 	var queue_hbox := HBoxContainer.new()
@@ -441,7 +444,7 @@ func _build_version_b_hud() -> void:
 		var rail := PanelContainer.new()
 		rail.custom_minimum_size = Vector2(82, 174)
 		var rsb := StyleBoxFlat.new()
-		rsb.bg_color = Color(0.885, 0.918, 0.958)
+		rsb.bg_color = Color(0.018, 0.072, 0.225, 0.88)
 		rsb.set_corner_radius_all(13)
 		rsb.set_content_margin_all(4)
 		rail.add_theme_stylebox_override("panel", rsb)
@@ -1645,7 +1648,7 @@ func _refresh_top_hud() -> void:
 	var ch_i: int = services.island_chapter
 	var painted: int = services.island_modules_painted[ch_i]
 	for i in range(5):
-		var col: Color = Color(0.118, 0.161, 0.231) if i < painted else Color(0.796, 0.835, 0.882)
+		var col: Color = Color(1.0, 0.839, 0.0) if i < painted else Color(0.18, 0.36, 0.72, 0.78)
 		island_segs[i].add_theme_stylebox_override("panel", _make_solid_pill(col, 5))
 
 

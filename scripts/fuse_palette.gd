@@ -1,67 +1,66 @@
 class_name FusePalette
 extends RefCounted
 
-## Strict Version B 6-Color Safety Palette (RD-SPEC-03 Section 1.2)
-## 1-based Color IDs matching levels_v1_60_config.csv & level_XXX.json!
-##  1: Cobalt Blue #1D63ED (Solid Circle)
-##  2: Coral Red #FF4D4F (Equilateral Triangle)
-##  3: Vibrant Orange #FF8A1F (Diamond)
-##  4: Emerald Green #14B866 (Square)
-##  5: Sun Yellow #FFD014 (5-Point Star)
-##  6: Electric Purple #8B5CF6 (Cross Star, unlocked Lv.43)
+## High-Saturation Jewel 6-Color Arcade Palette (Tuned for Maximum Pop on Royal-Blue Stage!)
+## 1-based Color IDs matching levels_manifest.json & level_XXX.json:
+##  1: Sky-Electric Blue #1EA7FF (pops brilliantly against deep royal-blue stage!)
+##  2: Vivid Coral Red   #FF334B
+##  3: Juicy Orange      #FF8800
+##  4: Neon Emerald      #00D166
+##  5: Bright Sun Gold   #FFD600
+##  6: Vivid Purple      #A855F7 (Lv.43+)
 
 const COLORS: Dictionary = {
 	1: {
-		"name": "钴蓝",
-		"hex": "#1D63ED",
-		"color": Color(0.114, 0.388, 0.929),
-		"dark": Color(0.065, 0.235, 0.650),
-		"light": Color(0.360, 0.590, 1.000),
+		"name": "天际蓝",
+		"hex": "#1EA7FF",
+		"color": Color(0.118, 0.655, 1.000),
+		"dark": Color(0.045, 0.380, 0.740),
+		"light": Color(0.450, 0.820, 1.000),
 		"symbol": "●",
 	},
 	2: {
 		"name": "珊瑚红",
-		"hex": "#FF4D4F",
-		"color": Color(1.000, 0.302, 0.310),
-		"dark": Color(0.760, 0.145, 0.165),
-		"light": Color(1.000, 0.540, 0.545),
+		"hex": "#FF334B",
+		"color": Color(1.000, 0.200, 0.294),
+		"dark": Color(0.740, 0.080, 0.150),
+		"light": Color(1.000, 0.480, 0.540),
 		"symbol": "▲",
 	},
 	3: {
 		"name": "活力橘",
-		"hex": "#FF8A1F",
-		"color": Color(1.000, 0.541, 0.122),
-		"dark": Color(0.760, 0.340, 0.040),
-		"light": Color(1.000, 0.720, 0.380),
+		"hex": "#FF8800",
+		"color": Color(1.000, 0.533, 0.000),
+		"dark": Color(0.760, 0.320, 0.000),
+		"light": Color(1.000, 0.720, 0.300),
 		"symbol": "◆",
 	},
 	4: {
 		"name": "翡翠绿",
-		"hex": "#14B866",
-		"color": Color(0.078, 0.722, 0.400),
-		"dark": Color(0.035, 0.480, 0.250),
-		"light": Color(0.320, 0.870, 0.590),
+		"hex": "#00D166",
+		"color": Color(0.000, 0.820, 0.400),
+		"dark": Color(0.000, 0.520, 0.220),
+		"light": Color(0.320, 0.960, 0.620),
 		"symbol": "■",
 	},
 	5: {
 		"name": "阳光黄",
-		"hex": "#FFD014",
-		"color": Color(1.000, 0.816, 0.078),
-		"dark": Color(0.780, 0.550, 0.015),
-		"light": Color(1.000, 0.910, 0.420),
+		"hex": "#FFD600",
+		"color": Color(1.000, 0.839, 0.000),
+		"dark": Color(0.780, 0.560, 0.000),
+		"light": Color(1.000, 0.930, 0.400),
 		"symbol": "★",
 	},
 	6: {
 		"name": "电光紫",
-		"hex": "#8B5CF6",
-		"color": Color(0.545, 0.361, 0.965),
-		"dark": Color(0.350, 0.180, 0.720),
-		"light": Color(0.720, 0.580, 1.000),
+		"hex": "#A855F7",
+		"color": Color(0.659, 0.333, 0.969),
+		"dark": Color(0.420, 0.150, 0.720),
+		"light": Color(0.800, 0.580, 1.000),
 		"symbol": "✦",
 	},
 }
 
-## V1.0 2 Chapters × 5 Paintable 3D Island Modules (RD-SPEC-02 Section 4.1)
 const ISLAND_CHAPTERS: Array[Dictionary] = [
 	{
 		"id": 0,

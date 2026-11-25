@@ -1,17 +1,17 @@
 shader_type sky;
 
-// Clean Cool-Architectural Light Gray-Blue Stage Gradient (#E8EEF5 -> #F5F8FC)
-// Calibrated specifically for GL Compatibility + WebGL2 + Filmic tonemapper so it renders
-// as a crisp cool light-blue-gray studio stage (NOT washed-out pure white!)
-uniform vec3 u_top_color : source_color = vec3(0.760, 0.832, 0.915);
-uniform vec3 u_mid_color : source_color = vec3(0.840, 0.890, 0.948);
-uniform vec3 u_bot_color : source_color = vec3(0.900, 0.932, 0.970);
+// Cube Smash Rich Royal-Blue Radial Studio Backdrop (Zero glare, maximum jewel-block contrast!)
+// Center royal-blue spotlight #134DC2 -> deep sapphire vignette #051A54
+uniform vec3 u_center_color : source_color = vec3(0.075, 0.302, 0.761);
+uniform vec3 u_mid_color : source_color = vec3(0.039, 0.192, 0.565);
+uniform vec3 u_edge_color : source_color = vec3(0.018, 0.090, 0.320);
 
 void sky() {
 	vec2 uv = SCREEN_UV;
-	float d = length((uv - vec2(0.5, 0.36)) * vec2(1.0, 1.35));
-	float spot = exp(-d * d * 2.5) * 0.04;
-	vec3 col = mix(u_top_color, u_mid_color, smoothstep(0.0, 0.55, uv.y));
-	col = mix(col, u_bot_color, smoothstep(0.50, 1.0, uv.y));
-	COLOR = clamp(col + vec3(spot), 0.0, 1.0);
+	float d = length((uv - vec2(0.5, 0.35)) * vec2(1.0, 1.35));
+	float t1 = smoothstep(0.0, 0.55, d);
+	float t2 = smoothstep(0.42, 1.15, d);
+	vec3 col = mix(u_center_color, u_mid_color, t1);
+	col = mix(col, u_edge_color, t2);
+	COLOR = col;
 }
