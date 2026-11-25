@@ -29,14 +29,16 @@ static func create_beveled_cube(half_extent: float = 0.485, bevel: float = 0.095
 		st.set_normal(nrms[3]); st.add_vertex(pts[3])
 
 	var add_tri := func(p0: Vector3, p1: Vector3, p2: Vector3) -> void:
+		# Godot front faces use CLOCKWISE winding (so (p1-p0).cross(p2-p0) points INWARD!)
 		var fn: Vector3 = (p1 - p0).cross(p2 - p0).normalized()
-		if fn.dot((p0 + p1 + p2).normalized()) < 0.0:
+		if fn.dot((p0 + p1 + p2).normalized()) > 0.0:
 			var tmp: Vector3 = p1
 			p1 = p2
 			p2 = tmp
 			fn = -fn
+		var outward_n: Vector3 = -fn
 		for p in [p0, p1, p2]:
-			st.set_normal(fn.lerp(p.normalized(), 0.45).normalized())
+			st.set_normal(outward_n.lerp(p.normalized(), 0.45).normalized())
 			st.add_vertex(p)
 
 	# 6 Main Flat Faces (12 tris)

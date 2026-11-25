@@ -50,6 +50,7 @@ var reserved_targets: Dictionary = {}
 var total_voxels: int = 0
 var voxel_step: float = 0.36
 var center_offset := Vector3.ZERO
+var bound_radius: float = 2.8
 var spinner_y_min: int = -99
 var spinner_y_max: int = -99
 var has_magnetic_snap: bool = false
@@ -211,6 +212,11 @@ func load_level(level_num: int, win_streak: int = 0) -> void:
 		max_v.z = maxf(max_v.z, float(p.z))
 
 	center_offset = (min_v + max_v) * 0.5
+	var max_r: float = 1.8
+	for p: Vector3i in voxels.keys():
+		var local_p: Vector3 = (Vector3(p) - center_offset) * voxel_step
+		max_r = maxf(max_r, local_p.length() + voxel_step * 0.65)
+	bound_radius = max_r
 	total_voxels = voxels.size()
 
 	# Generate Auto-Solver Verified 5-Column Queues!
@@ -426,7 +432,7 @@ func _process(delta: float) -> void:
 		var b: float = sin(snap_bounce_t * PI * 2.0) * snap_bounce_t * 0.16
 		squash = Vector3(1.0 + b, 1.0 - b * 1.25, 1.0 + b)
 
-	model_tilt_root.position.y = 1.38 + hover_y
+	model_tilt_root.position.y = 1.55 + hover_y
 	orbit_pivot.rotation = Vector3(pitch, yaw, 0.0)
 	orbit_pivot.scale = squash
 
@@ -471,11 +477,14 @@ func _update_camera(delta: float) -> void:
 	camera.fov = 34.0
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
 
-	# Frame the 3D sculpture squarely inside the upper-center 50% stage (exact Page 2 layout!)
-	var half_tan_x: float = tan(deg_to_rad(17.0)) * aspect
-	var dist: float = maxf(16.8, 3.10 / maxf(half_tan_x, 0.14)) + zoom_offset
-	var look_at_pt := Vector3(0.0, -0.35, 0.0) # Offset downward so sculpture sits cleanly in upper half!
-	var desired := look_at_pt + Vector3(0.0, 0.28, 1.0).normalized() * dist
+	# Dynamically frame EVERY sculpture cleanly inside the upper-center 50% stage (zero HUD/slot overlap!)
+	var half_tan_y: float = tan(deg_to_rad(17.0))
+	var half_tan_x: float = half_tan_y * aspect
+	var dist_for_w: float = (bound_radius * 1.24) / maxf(half_tan_x, 0.14)
+	var dist_for_h: float = (bound_radius * 2.38) / half_tan_y
+	var dist: float = maxf(18.5, maxf(dist_for_w, dist_for_h)) + zoom_offset
+	var look_at_pt := Vector3(0.0, -0.30, 0.0) # Places sculpture dead-center in upper-center 50% zone!
+	var desired := look_at_pt + Vector3(0.0, 0.24, 1.0).normalized() * dist
 
 	if hit_shake > 0.001:
 		hit_shake = maxf(0.0, hit_shake - delta * 2.8)

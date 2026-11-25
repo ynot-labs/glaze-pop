@@ -114,22 +114,22 @@ func _setup_clean_arcade_lighting() -> void:
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.92, 0.95, 1.0)
-	env.ambient_light_energy = 0.62
+	env.ambient_light_color = Color(0.86, 0.91, 0.98)
+	env.ambient_light_energy = 0.34
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_exposure = 1.06
+	env.tonemap_exposure = 1.02
 	world_env.environment = env
 
-	# Single crisp key light for locked 60fps mobile/WebGL2 performance!
-	key_light.rotation_degrees = Vector3(-42.0, -32.0, 0.0)
-	key_light.light_color = Color(1.0, 0.985, 0.955)
-	key_light.light_energy = 1.28
+	# Single crisp key light for locked 60fps mobile/WebGL2 performance with rich 3D volume!
+	key_light.rotation_degrees = Vector3(-40.0, -34.0, 0.0)
+	key_light.light_color = Color(1.0, 0.99, 0.97)
+	key_light.light_energy = 1.45
 	key_light.shadow_enabled = true
-	key_light.shadow_opacity = 0.34
+	key_light.shadow_opacity = 0.42
 	key_light.shadow_blur = 1.8
 	key_light.shadow_bias = 0.03
 	key_light.shadow_normal_bias = 1.1
-	key_light.directional_shadow_max_distance = 28.0
+	key_light.directional_shadow_max_distance = 32.0
 
 
 # ==============================================================================
@@ -385,13 +385,18 @@ func _build_page2_arcade_ui() -> void:
 		queue_labels.append(row_lbls)
 
 		var extra_lbl := Label.new()
+		extra_lbl.anchor_left = 0.0
 		extra_lbl.anchor_right = 1.0
+		extra_lbl.anchor_top = 1.0
 		extra_lbl.anchor_bottom = 1.0
-		extra_lbl.offset_top = -16
-		extra_lbl.offset_right = -4
+		extra_lbl.offset_top = -18
+		extra_lbl.offset_bottom = -2
+		extra_lbl.offset_right = -6
 		extra_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		extra_lbl.add_theme_font_size_override("font_size", 11)
-		extra_lbl.add_theme_color_override("font_color", Color(0.24, 0.30, 0.42))
+		extra_lbl.add_theme_color_override("font_color", Color.WHITE)
+		extra_lbl.add_theme_color_override("font_outline_color", Color(0.08, 0.13, 0.22, 0.9))
+		extra_lbl.add_theme_constant_override("outline_size", 3)
 		extra_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		col_rail.add_child(extra_lbl)
 		queue_extra_badges.append(extra_lbl)
