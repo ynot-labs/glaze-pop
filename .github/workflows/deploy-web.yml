@@ -1,0 +1,68 @@
+name: Deploy Fuse Smash! H5 to GitHub Pages (Release + Beta)
+
+on:
+  push:
+    branches: ["main", "beta"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Release (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: release_repo
+
+      - name: Checkout Beta (beta)
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          path: beta_repo
+        continue-on-error: true
+
+      - name: Assemble Dual-Channel Pages Site (/ = Release, /beta/ = Beta)
+        run: |
+          mkdir -p _site
+          if [ -d "release_repo/build/web" ]; then
+            cp -r release_repo/build/web/. _site/
+          fi
+          touch _site/.nojekyll
+          if [ -d "beta_repo/build/web" ]; then
+            mkdir -p _site/beta
+            cp -r beta_repo/build/web/. _site/beta/
+            touch _site/beta/.nojekyll
+          fi
+          echo "=== Release (/) ==="
+          ls -lh _site
+          echo "=== Beta (/beta/) ==="
+          ls -lh _site/beta || true
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Dual-Channel H5 Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "_site"
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
