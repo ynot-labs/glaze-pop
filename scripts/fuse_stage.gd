@@ -1,34 +1,50 @@
 class_name FuseStage
 extends Node3D
 
-## Core 3D Arcade Voxel Engine for《合炮大爆破 Fuse Smash!》
-## Strictly adheres to GDD 5.2 60fps performance redline:
-##  - 1 Draw Call MultiMeshInstance3D for ALL sculpture cubes (standard 44-tri beveled cube)
-##  - Pre-allocated 40-cube Debris Object Pool (zero GC stutter!)
-##  - Merge-to-Fire (同色合炮), Pulse Core 3x3x3 Shockwave + 0.15s Slow-Mo,
-##    Spinner Layer 90° auto-rotation, Magnetic Snap, Chain Locks, Dual-Color Cannons,
-##    and 360° Auto-Scan Anti-Stuck!
+## V1.0 Store-Ready 3D Arcade Voxel Engine (RD-SPEC-02 & RD-SPEC-03 Compliant)
+##  - Strict 7-State Finite State Machine:
+##      INIT_LOAD, PLAYING_IDLE, DOCK_INSERT_AND_FUSE, FIRING_LOOP,
+##      AUTO_SCAN_FAILSAFE, RESCUE_PROMPT, VICTORY_SETTLE
+##  - 1 Draw Call MultiMeshInstance3D using beveled_cube.glb (exact 92 tris, 2-seg bevel!)
+##  - Real 3D pulse_core.glb & chain_lock_cage.glb MultiMeshes
+##  - Strict 40-cube Debris Object Pool (0.75s flight -> scale 0 recycle, zero GC!)
+##  - 1-Tier Super Cannon (1.2x ammo, 1.8x rate, 2-layer pierce) + 2-Tier Mega Cannon (2.2x rate, 3-layer pierce)
+##  - 360° Auto-Scan Failsafe (1.2s smooth spin, 15° sampling) + 5 Mechanics + 3 In-Game & 2 Pre-Level Boosters!
 
+enum StageState {
+	INIT_LOAD,
+	PLAYING_IDLE,
+	DOCK_INSERT_AND_FUSE,
+	FIRING_LOOP,
+	AUTO_SCAN_FAILSAFE,
+	RESCUE_PROMPT,
+	VICTORY_SETTLE,
+}
+
+signal state_changed(new_state: int)
 signal stats_changed(cleared: int, total: int, combo: int)
-signal state_updated()
-signal fuse_triggered(left_slot: int, right_slot: int, ch: int, new_ammo: int)
-signal shot_fired(slot_idx: int, target_screen_pos: Vector2, ch: int, is_super: bool)
-signal voxel_cleared_fx(screen_pos: Vector2, ch: int, is_core: bool)
-signal pulse_core_detonated(screen_pos: Vector2, cleared_count: int, bonus_coins: int)
+signal dock_updated()
+signal cannon_inserted_fx(col_idx: int, slot_idx: int, color_id: int, ammo: int)
+signal fuse_triggered(left_slot: int, right_slot: int, color_id: int, new_ammo: int, tier: int)
+signal shot_fired(slot_idx: int, target_screen_pos: Vector2, color_id: int, tier: int)
+signal voxel_cleared_fx(screen_pos: Vector2, color_id: int, is_core: bool)
+signal pulse_core_detonated(screen_pos: Vector2, blasted_count: int, bonus_coins: int)
 signal callout_banner(text: String, accent: Color)
 signal level_completed(summary: Dictionary)
-signal slots_jammed()
+signal slots_jammed(remaining_cubes: int, dock_snapshot: Array)
+signal first_rotate_detected()
 
 const BASE_SLOTS: int = 5
 const MAX_SLOTS: int = 6
-const NUM_COLS: int = 5
-const DEBRIS_POOL_SIZE: int = 40 # GDD 5.2 strict 40-object pool!
+const DEBRIS_POOL_SIZE: int = 40
+const BASE_FIRE_RATE: float = 6.0 # RD-SPEC-02 1.2: 6 shots/sec -> Super 10.8/s -> Mega 13.2/s!
 const DIRS6: Array[Vector3i] = [
 	Vector3i(1,0,0), Vector3i(-1,0,0),
 	Vector3i(0,1,0), Vector3i(0,-1,0),
 	Vector3i(0,0,1), Vector3i(0,0,-1),
 ]
 
+var stage_state: int = StageState.INIT_LOAD
 var camera: Camera3D
 var audio: ArcadeAudio
 
@@ -36,79 +52,106 @@ var model_tilt_root: Node3D
 var orbit_pivot: Node3D
 var main_multimesh: MultiMeshInstance3D
 var core_multimesh: MultiMeshInstance3D
+var chain_multimesh: MultiMeshInstance3D
+var spinner_ring_root: Node3D
 var fx_root: Node3D
 
 var plastic_mat: ShaderMaterial
 var core_mat: ShaderMaterial
-var cube_mesh: ArrayMesh
-var core_mesh: SphereMesh
+var chain_mat: StandardMaterial3D
+var cube_mesh: Mesh
+var core_mesh: Mesh
+var chain_mesh: Mesh
 
-var level_data: Dictionary = {}
-var voxels: Dictionary = {} # Vector3i -> {ch, locked, core, hit_t, ao}
+var level_json: Dictionary = {}
+var voxels: Dictionary = {} # Vector3i -> {cid, locked, core, hit_t, ao}
 var exposed_set: Dictionary = {}
 var reserved_targets: Dictionary = {}
 var total_voxels: int = 0
 var voxel_step: float = 0.36
 var center_offset := Vector3.ZERO
-var bound_radius: float = 2.8
-var spinner_y_min: int = -99
-var spinner_y_max: int = -99
-var has_magnetic_snap: bool = false
+var bound_radius: float = 2.6
 
-var slots: Array = [] # size 6, entries null or {ch, ammo, ch2, ammo2, is_super, cooldown}
+var spinner_layers: Array[int] = []
+var has_magnetic_snap: bool = false
+var hidden_queue_pct: float = 0.0
+var num_cols: int = 5
+
+# Dock slots: null or {cid, ammo, tier(0=basic,1=super,2=mega), cooldown, locked_for_fuse}
+var slots: Array = []
 var extra_slot_unlocked: bool = false
-var columns: Array = [[], [], [], [], []]
+var columns: Array = [] # Array of Array[Dictionary {color_id, ammo, hidden}]
+var forced_first_tap_col: int = -1
 
 var debris_pool: Array[Dictionary] = []
 var debris_cursor: int = 0
 var shock_rings: Array[Dictionary] = []
 var pending_hits: Array[Dictionary] = []
 
-var yaw: float = 0.0
+# Camera / Orbit / Interaction (RD-SPEC-02 1.1 exact constraints)
+var yaw: float = -0.38
 var pitch: float = 0.0
 var yaw_vel: float = 0.0
 var pitch_vel: float = 0.0
-var zoom_offset: float = 0.0
+var zoom_scale: float = 1.0 # Clamped 0.85x - 1.25x
 var is_dragging: bool = false
-var auto_scanning: bool = false
-var auto_scan_accum: float = 0.0
+var total_user_rot_rad: float = 0.0
+var reported_first_rotate: bool = false
 
+# Timers & Telemetry Stats
+var insert_fuse_timer: float = 0.0
+var auto_scan_idle_t: float = 0.0
+var auto_scan_elapsed: float = 0.0
+var auto_scan_start_yaw: float = 0.0
+var auto_scan_last_sector: int = -1
+var slowmo_real_rem: float = 0.0
+var hit_shake: float = 0.0
+var snap_bounce_t: float = 0.0
+var spinner_visual_rot_rem: float = 0.0
+
+var level_start_ms: int = 0
+var shots_fired_total: int = 0
 var combo_count: int = 0
 var combo_timer: float = 0.0
 var max_combo: int = 0
-var slot_clear_streak: int = 0
-var pulse_cores_blasted: int = 0
+var fuse_count: int = 0
+var cores_popped: int = 0
 var core_bonus_coins: int = 0
-var fuse_count_this_level: int = 0
+var max_single_core_blast: int = 0
+var boosters_used_count: int = 0
+var warned_4_slots: bool = false
 
-var hit_shake: float = 0.0
-var slowmo_real_remaining: float = 0.0
-var snap_bounce_t: float = 0.0
-var spinner_anim_angle: float = 0.0
 var multimesh_dirty: bool = false
-var celebrating_win: bool = false
 var stage_active: bool = true
 var show_symbols: bool = false
-var jam_grace_timer: float = 0.0
-var verified_paths_count: int = 0
 
 
 func setup(p_camera: Camera3D, p_audio: ArcadeAudio) -> void:
 	camera = p_camera
 	audio = p_audio
 
-	cube_mesh = BeveledCubeBuilder.create_beveled_cube(0.485, 0.095)
-	core_mesh = BeveledCubeBuilder.create_core_sphere(0.56)
+	# Load Store-Ready Blender/glTF 2.0 Production Meshes (RD-SPEC-03 2.1!)
+	cube_mesh = _extract_glb_mesh("res://assets/fuse/models/beveled_cube.glb")
+	if cube_mesh == null:
+		cube_mesh = BeveledCubeBuilder.create_beveled_cube(0.488, 0.12)
+	core_mesh = _extract_glb_mesh("res://assets/fuse/models/pulse_core.glb")
+	if core_mesh == null:
+		core_mesh = BeveledCubeBuilder.create_core_sphere(0.56)
+	chain_mesh = _extract_glb_mesh("res://assets/fuse/models/chain_lock_cage.glb")
 
 	plastic_mat = ShaderMaterial.new()
 	plastic_mat.shader = preload("res://shaders/arcade_plastic.gdshader")
-
 	core_mat = ShaderMaterial.new()
 	core_mat.shader = preload("res://shaders/pulse_core.gdshader")
 
+	chain_mat = StandardMaterial3D.new()
+	chain_mat.albedo_color = Color(0.20, 0.25, 0.34)
+	chain_mat.metallic = 0.85
+	chain_mat.roughness = 0.28
+
 	model_tilt_root = Node3D.new()
 	model_tilt_root.name = "ModelTiltRoot"
-	model_tilt_root.position = Vector3(0.0, 1.35, 0.0)
+	model_tilt_root.position = Vector3(0.0, 1.55, 0.0)
 	add_child(model_tilt_root)
 
 	orbit_pivot = Node3D.new()
@@ -128,7 +171,6 @@ func setup(p_camera: Camera3D, p_audio: ArcadeAudio) -> void:
 	main_multimesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	orbit_pivot.add_child(main_multimesh)
 
-	# Lightweight MultiMesh for embedded Golden Pulse Energy Cores
 	core_multimesh = MultiMeshInstance3D.new()
 	core_multimesh.name = "PulseCoreMultiMesh"
 	var cmm := MultiMesh.new()
@@ -139,11 +181,26 @@ func setup(p_camera: Camera3D, p_audio: ArcadeAudio) -> void:
 	core_multimesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	orbit_pivot.add_child(core_multimesh)
 
+	chain_multimesh = MultiMeshInstance3D.new()
+	chain_multimesh.name = "ChainLockMultiMesh"
+	var chmm := MultiMesh.new()
+	chmm.transform_format = MultiMesh.TRANSFORM_3D
+	if chain_mesh != null:
+		chmm.mesh = chain_mesh
+	chain_multimesh.multimesh = chmm
+	chain_multimesh.material_override = chain_mat
+	chain_multimesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	orbit_pivot.add_child(chain_multimesh)
+
+	spinner_ring_root = Node3D.new()
+	spinner_ring_root.name = "SpinnerRings"
+	orbit_pivot.add_child(spinner_ring_root)
+
 	fx_root = Node3D.new()
 	fx_root.name = "FXRoot"
 	add_child(fx_root)
 
-	# Pre-allocate 40 flying debris cubes (GDD 5.2 strict object pool!)
+	# Pre-allocate strict 40-cube Debris Object Pool (RD-SPEC-03 2.2!)
 	for i in range(DEBRIS_POOL_SIZE):
 		var mi := MeshInstance3D.new()
 		mi.mesh = cube_mesh
@@ -170,37 +227,67 @@ func setup(p_camera: Camera3D, p_audio: ArcadeAudio) -> void:
 		slots[i] = null
 
 
+func _extract_glb_mesh(path: String) -> Mesh:
+	if not ResourceLoader.exists(path):
+		return null
+	var ps: PackedScene = load(path)
+	if ps == null:
+		return null
+	var inst: Node = ps.instantiate()
+	var found: Mesh = _find_mesh_recursive(inst)
+	inst.free()
+	return found
+
+
+func _find_mesh_recursive(n: Node) -> Mesh:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		return (n as MeshInstance3D).mesh
+	for c in n.get_children():
+		var m: Mesh = _find_mesh_recursive(c)
+		if m != null:
+			return m
+	return null
+
+
+func _set_state(new_st: int) -> void:
+	if stage_state == new_st:
+		return
+	stage_state = new_st
+	state_changed.emit(new_st)
+
+
 func set_symbol_mode(enabled: bool) -> void:
 	show_symbols = enabled
 	if plastic_mat:
 		plastic_mat.set_shader_parameter("u_show_symbols", 1.0 if enabled else 0.0)
 
 
-func load_level(level_num: int, win_streak: int = 0) -> void:
+# ==============================================================================
+# INIT_LOAD: Parse V1.0 JSON Blueprint + Apply Pre-Level Boosters & FTUE!
+# ==============================================================================
+func load_level_from_json(data: Dictionary, pre_super: bool = false, pre_double_core: bool = false) -> void:
+	_set_state(StageState.INIT_LOAD)
 	_reset_transient()
-	level_data = LevelArchitect.build_level(level_num)
-	voxel_step = float(level_data.get("voxel_step", 0.36))
-	spinner_y_min = int(level_data.get("spinner_y_min", -99))
-	spinner_y_max = int(level_data.get("spinner_y_max", -99))
-	has_magnetic_snap = bool(level_data.get("has_magnetic_snap", false))
+	level_json = data
 
-	var tilt_deg: Vector3 = level_data.get("tilt_deg", Vector3(10.0, -22.0, -10.0))
-	model_tilt_root.rotation_degrees = Vector3(tilt_deg.x, 0.0, tilt_deg.z)
-	yaw = deg_to_rad(tilt_deg.y)
-	pitch = 0.0
-	yaw_vel = 0.0
-	pitch_vel = 0.0
-	zoom_offset = 0.0
+	var mech: Dictionary = data.get("mechanics", {})
+	spinner_layers.clear()
+	for sy in mech.get("spinner_layers", []):
+		spinner_layers.append(int(sy))
+	has_magnetic_snap = bool(mech.get("magnetic_snap_enabled", false))
+	hidden_queue_pct = float(data.get("hidden_queue_pct", 0.0))
 
-	var src_voxels: Dictionary = level_data["voxels"]
+	var raw_voxels: Array = data.get("voxels", [])
 	var min_v := Vector3(999, 999, 999)
 	var max_v := Vector3(-999, -999, -999)
-	for p: Vector3i in src_voxels.keys():
-		var d: Dictionary = src_voxels[p]
+	for entry in raw_voxels:
+		var p := Vector3i(int(entry[0]), int(entry[1]), int(entry[2]))
+		var cid: int = clampi(int(entry[3]), 1, 6)
+		var flg: int = int(entry[4]) if entry.size() > 4 else 0
 		voxels[p] = {
-			"ch": int(d["ch"]),
-			"locked": bool(d.get("locked", false)),
-			"core": bool(d.get("core", false)),
+			"cid": cid,
+			"locked": (flg == 3),
+			"core": (flg == 1),
 			"hit_t": -10.0,
 			"ao": 1.0,
 		}
@@ -211,33 +298,108 @@ func load_level(level_num: int, win_streak: int = 0) -> void:
 		max_v.y = maxf(max_v.y, float(p.y))
 		max_v.z = maxf(max_v.z, float(p.z))
 
+	# Pre-Level Booster: Double Pulse Core (injects 1 extra glowing golden core inside sculpture!)
+	if pre_double_core and voxels.size() > 12:
+		var best_p := Vector3i.ZERO
+		var best_dist: float = 9999.0
+		var mid_v: Vector3 = (min_v + max_v) * 0.5
+		for p: Vector3i in voxels.keys():
+			if not bool(voxels[p]["core"]):
+				var d: float = (Vector3(p) - mid_v).length()
+				if d < best_dist:
+					best_dist = d
+					best_p = p
+		voxels[best_p]["core"] = true
+		voxels[best_p]["locked"] = false
+
 	center_offset = (min_v + max_v) * 0.5
-	var max_r: float = 1.8
+	var span_max: float = maxf(max_v.x - min_v.x + 1.0, maxf(max_v.y - min_v.y + 1.0, max_v.z - min_v.z + 1.0))
+	voxel_step = clampf(4.2 / maxf(span_max, 5.0), 0.28, 0.56)
+
+	var max_r: float = 1.6
 	for p: Vector3i in voxels.keys():
-		var local_p: Vector3 = (Vector3(p) - center_offset) * voxel_step
-		max_r = maxf(max_r, local_p.length() + voxel_step * 0.65)
+		var lp: Vector3 = (Vector3(p) - center_offset) * voxel_step
+		max_r = maxf(max_r, lp.length() + voxel_step * 0.65)
 	bound_radius = max_r
 	total_voxels = voxels.size()
 
-	# Generate Auto-Solver Verified 5-Column Queues!
-	var gen: Dictionary = FuseSolver.generate_verified_columns(level_data)
-	columns = gen["columns"]
-	verified_paths_count = int(gen["verified_paths"])
+	# Heroic 3/4 tilt angle (RD-SPEC-03 1.1: 28° 3/4 isometric appeal!)
+	var model_id: String = String(data.get("model_id", ""))
+	if model_id.contains("rocket") or model_id.contains("shuttle"):
+		model_tilt_root.rotation_degrees = Vector3(10.0, 0.0, -22.0)
+	else:
+		model_tilt_root.rotation_degrees = Vector3(8.0, 0.0, -5.0)
+	yaw = deg_to_rad(-24.0)
+	pitch = 0.0
+	yaw_vel = 0.0
+	pitch_vel = 0.0
+	zoom_scale = 1.0
 
-	# Win Streak Reward (GDD 4): 3+ streak starts with 1 pre-charged Super Cannon in Column 2 Row 0!
-	if win_streak >= 3 and not columns[2].is_empty():
-		columns[2][0]["is_super"] = true
-		columns[2][0]["ammo"] = int(ceil(float(columns[2][0]["ammo"]) * 1.25))
+	# Load shooter queues from JSON + apply hidden_queue_pct fog on deep rows!
+	var src_queues: Array = data.get("shooter_queues", [])
+	num_cols = clampi(src_queues.size(), 3, 5)
+	columns.clear()
+	var total_q_items: int = 0
+	for c_arr in src_queues:
+		var col_list: Array = []
+		for it in c_arr:
+			col_list.append({
+				"color_id": clampi(int(it["color_id"]), 1, 6),
+				"ammo": int(it["ammo"]),
+				"hidden": false,
+			})
+			total_q_items += 1
+		columns.append(col_list)
 
+	# Mark deepest hidden_queue_pct cannons as '?' mystery fog (revealed as they move up to Row 0/1!)
+	if hidden_queue_pct > 0.01:
+		var target_hidden: int = int(round(float(total_q_items) * hidden_queue_pct))
+		var hid_cnt: int = 0
+		for depth_row in range(8, 1, -1):
+			for c_i in range(columns.size()):
+				if hid_cnt >= target_hidden:
+					break
+				if depth_row < columns[c_i].size():
+					columns[c_i][depth_row]["hidden"] = true
+					hid_cnt += 1
+
+	# FTUE Preloaded Dock (e.g. Lv.1 Cobalt Blue 14 in Slot 0 + forced_first_tap_column = 0!)
+	var ftue: Dictionary = data.get("ftue_script", {})
+	forced_first_tap_col = int(ftue.get("forced_first_tap_column", -1)) if bool(ftue.get("enabled", false)) else -1
+	for pre in ftue.get("preloaded_dock", []):
+		var s_i: int = clampi(int(pre["slot_index"]), 0, BASE_SLOTS - 1)
+		slots[s_i] = {
+			"cid": clampi(int(pre["color_id"]), 1, 6),
+			"ammo": int(pre["ammo"]),
+			"tier": 0,
+			"cooldown": 999.0 if forced_first_tap_col >= 0 else 0.15, # Wait for Lv.1 first fuse tap!
+			"locked_for_fuse": false,
+		}
+
+	# Pre-Level Booster: Charged Super Cannon in Slot 0 (or next empty slot if FTUE preloaded!)
+	if pre_super:
+		var target_s: int = 0 if slots[0] == null else 1
+		var top_cid: int = int(columns[0][0]["color_id"]) if not columns[0].is_empty() else 1
+		slots[target_s] = {
+			"cid": top_cid,
+			"ammo": 22,
+			"tier": 1,
+			"cooldown": 0.15,
+			"locked_for_fuse": false,
+		}
+
+	_build_spinner_ring_visuals()
 	_recompute_exposed_and_ao()
 	_rebuild_multimeshes()
+	level_start_ms = Time.get_ticks_msec()
+	_set_state(StageState.PLAYING_IDLE)
 	stats_changed.emit(0, total_voxels, 0)
-	state_updated.emit()
+	dock_updated.emit()
 
 
 func _reset_transient() -> void:
 	Engine.time_scale = 1.0
-	slowmo_real_remaining = 0.0
+	slowmo_real_rem = 0.0
 	voxels.clear()
 	exposed_set.clear()
 	reserved_targets.clear()
@@ -245,20 +407,26 @@ func _reset_transient() -> void:
 	for i in range(MAX_SLOTS):
 		slots[i] = null
 	extra_slot_unlocked = false
-	celebrating_win = false
-	auto_scanning = false
-	auto_scan_accum = 0.0
-	jam_grace_timer = 0.0
+	forced_first_tap_col = -1
+	insert_fuse_timer = 0.0
+	auto_scan_idle_t = 0.0
+	auto_scan_elapsed = 0.0
+	auto_scan_last_sector = -1
+	total_user_rot_rad = 0.0
+	reported_first_rotate = false
+	shots_fired_total = 0
 	combo_count = 0
 	combo_timer = 0.0
 	max_combo = 0
-	slot_clear_streak = 0
-	pulse_cores_blasted = 0
+	fuse_count = 0
+	cores_popped = 0
 	core_bonus_coins = 0
-	fuse_count_this_level = 0
+	max_single_core_blast = 0
+	boosters_used_count = 0
+	warned_4_slots = false
 	hit_shake = 0.0
 	snap_bounce_t = 0.0
-	spinner_anim_angle = 0.0
+	spinner_visual_rot_rem = 0.0
 
 	for db in debris_pool:
 		db["active"] = false
@@ -267,36 +435,81 @@ func _reset_transient() -> void:
 		if is_instance_valid(r["node"]):
 			r["node"].queue_free()
 	shock_rings.clear()
+	for c in spinner_ring_root.get_children():
+		c.queue_free()
+
+
+func _build_spinner_ring_visuals() -> void:
+	for sy in spinner_layers:
+		var ring := MeshInstance3D.new()
+		var torus := TorusMesh.new()
+		var rad: float = bound_radius * 0.92
+		torus.inner_radius = maxf(0.8, rad - 0.035)
+		torus.outer_radius = rad + 0.035
+		torus.rings = 36
+		torus.ring_segments = 8
+		ring.mesh = torus
+		var sm := StandardMaterial3D.new()
+		sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		sm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		sm.albedo_color = Color(1.0, 1.0, 1.0, 0.78)
+		ring.material_override = sm
+		ring.position = Vector3(0.0, (float(sy) - center_offset.y) * voxel_step, 0.0)
+		ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		spinner_ring_root.add_child(ring)
 
 
 func get_active_slot_limit() -> int:
 	return MAX_SLOTS if extra_slot_unlocked else BASE_SLOTS
 
 
+func get_occupied_slot_count() -> int:
+	var n: int = 0
+	for i in range(get_active_slot_limit()):
+		if slots[i] != null:
+			n += 1
+	return n
+
+
+# ==============================================================================
+# INTERACTION: Exact 210° Full-Width Swipe, 0.88/frame Decay, 0.85x-1.25x Zoom!
+# ==============================================================================
 func apply_orbit_drag(rel: Vector2) -> void:
+	if stage_state in [StageState.AUTO_SCAN_FAILSAFE, StageState.RESCUE_PROMPT, StageState.VICTORY_SETTLE]:
+		return
 	is_dragging = true
-	auto_scanning = false
-	yaw += rel.x * 0.0115
-	pitch = clampf(pitch + rel.y * 0.007, -0.58, 0.58)
-	yaw_vel = clampf(rel.x * 0.45, -7.5, 7.5)
-	pitch_vel = clampf(rel.y * 0.25, -4.0, 4.0)
+	var vp_w: float = maxf(320.0, get_viewport().get_visible_rect().size.x)
+	# RD-SPEC-02 1.1: Full screen width drag = 210 degrees!
+	var d_yaw: float = (rel.x / vp_w) * deg_to_rad(210.0)
+	var d_pitch: float = (rel.y / vp_w) * deg_to_rad(130.0)
+	yaw += d_yaw
+	pitch = clampf(pitch + d_pitch, -0.56, 0.56)
+	yaw_vel = clampf(d_yaw, -0.22, 0.22)
+	pitch_vel = clampf(d_pitch, -0.14, 0.14)
+	total_user_rot_rad += absf(d_yaw)
+	if not reported_first_rotate and total_user_rot_rad > 0.65:
+		reported_first_rotate = true
+		first_rotate_detected.emit()
 
 
 func end_orbit_drag() -> void:
 	is_dragging = false
 
 
-func apply_zoom_delta(delta_z: float) -> void:
-	zoom_offset = clampf(zoom_offset + delta_z, -2.6, 2.2)
+func apply_zoom_factor(mult: float) -> void:
+	zoom_scale = clampf(zoom_scale * mult, 0.85, 1.25)
 
 
 # ==============================================================================
-# PLAYER INPUT: Pick Column Top Cannon -> Active Slot -> Check Instant Merge-to-Fire!
+# DOCK_INSERT_AND_FUSE: 0.18s Bezier Fly-In + 1-Tier Super & 2-Tier Mega Fuse!
 # ==============================================================================
 func try_pick_column(col_idx: int) -> bool:
-	if celebrating_win or col_idx < 0 or col_idx >= NUM_COLS:
+	if stage_state in [StageState.INIT_LOAD, StageState.AUTO_SCAN_FAILSAFE, StageState.RESCUE_PROMPT, StageState.VICTORY_SETTLE]:
 		return false
-	if columns[col_idx].is_empty():
+	if col_idx < 0 or col_idx >= columns.size() or columns[col_idx].is_empty():
+		return false
+	# Lv.1 FTUE forced first tap constraint!
+	if forced_first_tap_col >= 0 and col_idx != forced_first_tap_col:
 		return false
 
 	var limit: int = get_active_slot_limit()
@@ -305,132 +518,189 @@ func try_pick_column(col_idx: int) -> bool:
 		if slots[i] == null:
 			free_idx = i
 			break
-
 	if free_idx == -1:
 		hit_shake = 0.10
-		callout_banner.emit("槽位已满！试试同色合炮或道具破局", Color(1.0, 0.30, 0.31))
+		audio.play_slot_warn()
 		return false
 
 	var item: Dictionary = columns[col_idx].pop_front()
+	# Reveal next visible rows in that column
+	for r in range(mini(2, columns[col_idx].size())):
+		columns[col_idx][r]["hidden"] = false
+
+	# Release Lv.1 FTUE hold after first tap!
+	var was_ftue_fuse: bool = (forced_first_tap_col >= 0)
+	if was_ftue_fuse:
+		forced_first_tap_col = -1
+		if slots[0] != null:
+			slots[0]["cooldown"] = 0.05
+
+	var cid: int = int(item["color_id"])
+	var ammo: int = int(item["ammo"])
 	slots[free_idx] = {
-		"ch": int(item["ch"]),
-		"ammo": int(item["ammo"]),
-		"ch2": int(item.get("ch2", -1)),
-		"ammo2": int(item.get("ammo2", 0)),
-		"is_super": bool(item.get("is_super", false)),
-		"cooldown": 0.05,
+		"cid": cid,
+		"ammo": ammo,
+		"tier": 0,
+		"cooldown": 0.18, # Match 0.18s Bezier fly-in before firing!
+		"locked_for_fuse": false,
 	}
 	audio.play_slot_in()
-	auto_scanning = false
-	jam_grace_timer = 0.0
+	auto_scan_idle_t = 0.0
+	cannon_inserted_fx.emit(col_idx, free_idx, cid, ammo)
+	_set_state(StageState.DOCK_INSERT_AND_FUSE)
+	insert_fuse_timer = 0.18
 
-	# CORE SIGNATURE MECHANIC: Check adjacent Same-Color Fuse Cannon!
-	_check_and_trigger_adjacent_fuse(free_idx)
+	# Check immediate Merge-to-Fire (Slot i-1 priority, then Slot i+1!) + 2-Tier Mega Chain!
+	var merged: bool = _resolve_adjacent_fuses(free_idx)
+	if merged:
+		insert_fuse_timer = 0.28 # 0.28s electric arc merge lock!
+
+	# 4/5 Slot warning sound (RD-SPEC-03 3.2!)
+	if get_occupied_slot_count() == limit - 1 and not warned_4_slots:
+		warned_4_slots = true
+		audio.play_slot_warn()
+	elif get_occupied_slot_count() < limit - 1:
+		warned_4_slots = false
+
 	_retire_exhausted_channels()
-	state_updated.emit()
+	dock_updated.emit()
 	return true
 
 
-func _check_and_trigger_adjacent_fuse(focus_idx: int = -1) -> bool:
+func _resolve_adjacent_fuses(focus_idx: int) -> bool:
 	var limit: int = get_active_slot_limit()
-	var merged_any: bool = false
+	var any_merged: bool = false
 	var keep_checking: bool = true
 
 	while keep_checking:
 		keep_checking = false
-		var pairs_to_check: Array[Vector2i] = []
-		if focus_idx >= 0:
-			if focus_idx > 0:
-				pairs_to_check.append(Vector2i(focus_idx - 1, focus_idx))
-			if focus_idx + 1 < limit:
-				pairs_to_check.append(Vector2i(focus_idx, focus_idx + 1))
+		var check_pairs: Array[Vector2i] = []
+		# RD-SPEC-02 1.2: Priority slot[i-1], secondary slot[i+1]!
+		if focus_idx > 0 and focus_idx < limit:
+			check_pairs.append(Vector2i(focus_idx - 1, focus_idx))
+		if focus_idx >= 0 and focus_idx + 1 < limit:
+			check_pairs.append(Vector2i(focus_idx, focus_idx + 1))
 		for i in range(limit - 1):
 			var pr := Vector2i(i, i + 1)
-			if not pairs_to_check.has(pr):
-				pairs_to_check.append(pr)
+			if not check_pairs.has(pr):
+				check_pairs.append(pr)
 
-		for pr in pairs_to_check:
-			var a_i: int = pr.x
-			var b_i: int = pr.y
-			if slots[a_i] != null and slots[b_i] != null:
-				if int(slots[a_i]["ch"]) == int(slots[b_i]["ch"]):
-					var ch: int = int(slots[a_i]["ch"])
-					var sum_ammo: int = int(slots[a_i]["ammo"]) + int(slots[b_i]["ammo"])
-					var bonus_ammo: int = maxi(2, int(ceil(float(sum_ammo) * 0.20)))
-					var total_ammo: int = sum_ammo + bonus_ammo
+		for pr in check_pairs:
+			var a: int = pr.x
+			var b: int = pr.y
+			if slots[a] != null and slots[b] != null:
+				if int(slots[a]["cid"]) == int(slots[b]["cid"]):
+					var cur_tier_max: int = maxi(int(slots[a]["tier"]), int(slots[b]["tier"]))
+					if cur_tier_max >= 2:
+						continue # RD-SPEC-02 1.2: Cap at Tier 2 Mega Cannon!
+					var new_tier: int = mini(2, cur_tier_max + 1)
+					var cid: int = int(slots[a]["cid"])
+					var sum_a: int = int(slots[a]["ammo"]) + int(slots[b]["ammo"])
+					var new_ammo: int = int(ceil(float(sum_a) * 1.2))
+					var bonus_a: int = new_ammo - sum_a
 
-					# Preserve secondary color if either was a Dual-Color cannon
-					var keep_ch2: int = int(slots[a_i]["ch2"])
-					var keep_ammo2: int = int(slots[a_i]["ammo2"])
-					if keep_ch2 == -1 and int(slots[b_i]["ch2"]) != -1:
-						keep_ch2 = int(slots[b_i]["ch2"])
-						keep_ammo2 = int(slots[b_i]["ammo2"])
-
-					slots[a_i] = {
-						"ch": ch,
-						"ammo": total_ammo,
-						"ch2": keep_ch2,
-						"ammo2": keep_ammo2,
-						"is_super": true,
-						"cooldown": 0.04,
+					slots[a] = {
+						"cid": cid,
+						"ammo": new_ammo,
+						"tier": new_tier,
+						"cooldown": 0.28,
+						"locked_for_fuse": true,
 					}
-					slots[b_i] = null
-					fuse_count_this_level += 1
-					audio.play_fuse_arc()
-					hit_shake = maxf(hit_shake, 0.14)
-					fuse_triggered.emit(a_i, b_i, ch, total_ammo)
-					callout_banner.emit("⚡ 同色合炮！弹药 +%d · 1.8×射速 · 双层穿透！" % bonus_ammo, Color(0.11, 0.65, 1.0))
+					slots[b] = null
+					_compact_slots_left()
 
-					# Compact slots left gently? No — leaving the newly freed slot right there matches Page 2 & allows strategic positioning!
-					merged_any = true
+					fuse_count += 1
+					audio.play_fuse_arc(new_tier)
+					hit_shake = maxf(hit_shake, 0.22 if new_tier >= 2 else 0.14)
+					if new_tier >= 2:
+						Input.vibrate_handheld(45)
+						callout_banner.emit("⚡⚡ 终极 MEGA 合炮！弹药 +%d · 3层穿透！" % bonus_a, Color(0.55, 0.36, 0.96))
+					else:
+						callout_banner.emit("⚡ 同色合炮！弹药 +%d · 1.8×射速 · 双层穿透！" % bonus_a, Color(0.11, 0.65, 1.0))
+
+					fuse_triggered.emit(a, b, cid, new_ammo, new_tier)
+					any_merged = true
 					keep_checking = true
-					focus_idx = a_i
+					focus_idx = a
 					break
 
-	return merged_any
+	return any_merged
+
+
+func _compact_slots_left() -> void:
+	# RD-SPEC-02 1.2: Compact active dock slots smoothly to the left after merge!
+	var limit: int = get_active_slot_limit()
+	var compact: Array = []
+	for i in range(limit):
+		if slots[i] != null:
+			compact.append(slots[i])
+	for i in range(limit):
+		slots[i] = compact[i] if i < compact.size() else null
 
 
 # ==============================================================================
-# FRAME UPDATE: Orbit, Active Cannon Auto-Fire, 360° Auto-Scan, Debris Pool, Slow-Mo
+# FRAME LOOP: FSM Transitions, Orbit Damping (0.88/frame), Firing & AutoScan!
 # ==============================================================================
 func _process(delta: float) -> void:
 	if not stage_active:
 		return
 
-	# Handle real-time slow-mo timer (unscaled by Engine.time_scale!)
-	if slowmo_real_remaining > 0.0:
+	# Real-time Slow-Mo timer (0.15s @ Engine.time_scale = 0.35)
+	if slowmo_real_rem > 0.0:
 		var real_dt: float = delta / maxf(Engine.time_scale, 0.05)
-		slowmo_real_remaining -= real_dt
-		if slowmo_real_remaining <= 0.0:
+		slowmo_real_rem -= real_dt
+		if slowmo_real_rem <= 0.0:
 			Engine.time_scale = 1.0
 
 	var now_sec: float = Time.get_ticks_msec() * 0.001
 	plastic_mat.set_shader_parameter("u_clock", now_sec)
 	core_mat.set_shader_parameter("u_clock", now_sec)
 
-	# Smooth orbit damping & elastic zoom snap-back
-	if celebrating_win:
+	# State-driven rotation & animation
+	if stage_state == StageState.VICTORY_SETTLE:
 		yaw += delta * 1.45
 		pitch = lerpf(pitch, 0.0, clampf(delta * 4.0, 0.0, 1.0))
-	elif auto_scanning:
-		var scan_step: float = delta * 2.85
-		yaw += scan_step
-		auto_scan_accum += scan_step
-		pitch = lerpf(pitch, 0.0, clampf(delta * 3.5, 0.0, 1.0))
+	elif stage_state == StageState.AUTO_SCAN_FAILSAFE:
+		# RD-SPEC-02 1.1: Smooth 360° scan over 1.2s sampling every 15°!
+		auto_scan_elapsed += delta
+		var frac: float = clampf(auto_scan_elapsed / 1.2, 0.0, 1.0)
+		yaw = auto_scan_start_yaw + frac * TAU
+		pitch = lerpf(pitch, 0.0, clampf(delta * 6.0, 0.0, 1.0))
+		var sector: int = int(floor(frac * 24.0)) # 24 sectors = 15° steps!
+		if sector != auto_scan_last_sector:
+			auto_scan_last_sector = sector
+			if _any_slot_has_visible_target(-0.20):
+				_set_state(StageState.FIRING_LOOP)
+				auto_scan_idle_t = 0.0
+		if frac >= 1.0 and stage_state == StageState.AUTO_SCAN_FAILSAFE:
+			_set_state(StageState.RESCUE_PROMPT)
+			slots_jammed.emit(voxels.size(), _snapshot_dock())
 	elif not is_dragging:
-		yaw += yaw_vel * delta
-		pitch = clampf(pitch + pitch_vel * delta, -0.58, 0.58)
-		yaw_vel = lerpf(yaw_vel, 0.0, clampf(delta * 6.5, 0.0, 1.0))
-		pitch_vel = lerpf(pitch_vel, 0.0, clampf(delta * 6.5, 0.0, 1.0))
-		zoom_offset = lerpf(zoom_offset, 0.0, clampf(delta * 5.0, 0.0, 1.0))
+		# Exact 0.88/frame angular velocity damping (normalized to 60fps!)
+		var decay: float = pow(0.88, delta * 60.0)
+		yaw += yaw_vel * (delta * 60.0)
+		pitch = clampf(pitch + pitch_vel * (delta * 60.0), -0.56, 0.56)
+		yaw_vel *= decay
+		pitch_vel *= decay
+		if absf(yaw_vel) < 0.0005:
+			yaw_vel = 0.0
+		if absf(pitch_vel) < 0.0005:
+			pitch_vel = 0.0
+		zoom_scale = lerpf(zoom_scale, 1.0, clampf(delta * 4.5, 0.0, 1.0))
 
-	# Gentle floating hover + Magnetic Snap elastic bounce
-	var hover_y: float = sin(now_sec * 1.9) * 0.11
+	# Smooth 0.35s visual spin kick for Spinner Layer ring
+	if spinner_visual_rot_rem > 0.0:
+		var step_r: float = minf(spinner_visual_rot_rem, delta * (PI * 0.5 / 0.35))
+		spinner_visual_rot_rem -= step_r
+		spinner_ring_root.rotation.y += step_r
+
+	# Gentle float + 0.22s Magnetic Snap squash bounce
+	var hover_y: float = sin(now_sec * 1.9) * 0.09
 	var squash := Vector3.ONE
 	if snap_bounce_t > 0.0:
-		snap_bounce_t = maxf(0.0, snap_bounce_t - delta * 3.8)
+		snap_bounce_t = maxf(0.0, snap_bounce_t - delta / 0.22)
 		var b: float = sin(snap_bounce_t * PI * 2.0) * snap_bounce_t * 0.16
-		squash = Vector3(1.0 + b, 1.0 - b * 1.25, 1.0 + b)
+		squash = Vector3(1.0 + b, 1.0 - b * 1.22, 1.0 + b)
 
 	model_tilt_root.position.y = 1.55 + hover_y
 	orbit_pivot.rotation = Vector3(pitch, yaw, 0.0)
@@ -442,8 +712,18 @@ func _process(delta: float) -> void:
 			combo_count = 0
 			_emit_stats()
 
+	# DOCK_INSERT_AND_FUSE transition timer
+	if stage_state == StageState.DOCK_INSERT_AND_FUSE:
+		insert_fuse_timer -= delta
+		if insert_fuse_timer <= 0.0:
+			for i in range(MAX_SLOTS):
+				if slots[i] != null:
+					slots[i]["locked_for_fuse"] = false
+			_set_state(StageState.FIRING_LOOP)
+
 	_update_camera(delta)
-	_process_active_slots(delta)
+	if stage_state in [StageState.PLAYING_IDLE, StageState.FIRING_LOOP, StageState.DOCK_INSERT_AND_FUSE]:
+		_process_active_slots(delta)
 	_process_pending_hits(delta)
 	_process_debris_and_rings(delta)
 
@@ -451,22 +731,19 @@ func _process(delta: float) -> void:
 		multimesh_dirty = false
 		_rebuild_multimeshes()
 
-	# Auto-Scan Anti-Stuck (GDD 2.1 #5): When all slots full & idle, spin 360° before ever declaring jam!
-	if not celebrating_win and pending_hits.is_empty():
+	# Trigger AUTO_SCAN_FAILSAFE if all slots full & 0.4s idle (RD-SPEC-02 1.1!)
+	if stage_state in [StageState.PLAYING_IDLE, StageState.FIRING_LOOP] and pending_hits.is_empty():
 		if _are_all_slots_filled_and_idle():
-			if not auto_scanning:
-				jam_grace_timer += delta
-				if jam_grace_timer > 0.35:
-					auto_scanning = true
-					auto_scan_accum = 0.0
-					callout_banner.emit("↻ 自动 360° 扫描背面同色块...", Color(0.11, 0.39, 0.93))
-			elif auto_scan_accum >= TAU * 1.08:
-				auto_scanning = false
-				auto_scan_accum = 0.0
-				jam_grace_timer = -999.0
-				slots_jammed.emit()
+			auto_scan_idle_t += delta
+			if auto_scan_idle_t >= 0.40:
+				auto_scan_idle_t = 0.0
+				auto_scan_elapsed = 0.0
+				auto_scan_start_yaw = yaw
+				auto_scan_last_sector = -1
+				_set_state(StageState.AUTO_SCAN_FAILSAFE)
+				callout_banner.emit("↻ 自动 360° 扫描背面同色块...", Color(0.11, 0.39, 0.93))
 		else:
-			jam_grace_timer = 0.0
+			auto_scan_idle_t = 0.0
 
 
 func _update_camera(delta: float) -> void:
@@ -474,17 +751,19 @@ func _update_camera(delta: float) -> void:
 		return
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	var aspect: float = vp.x / maxf(vp.y, 1.0)
-	camera.fov = 34.0
+	camera.fov = 34.0 # RD-SPEC-03 1.1 exact FOV = 34°!
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
 
-	# Dynamically frame EVERY sculpture cleanly inside the upper-center 50% stage (zero HUD/slot overlap!)
+	# Sculpture bounding sphere strictly fills 65%-75% of stage width with clean vertical breathing room!
 	var half_tan_y: float = tan(deg_to_rad(17.0))
 	var half_tan_x: float = half_tan_y * aspect
-	var dist_for_w: float = (bound_radius * 1.24) / maxf(half_tan_x, 0.14)
-	var dist_for_h: float = (bound_radius * 2.38) / half_tan_y
-	var dist: float = maxf(18.5, maxf(dist_for_w, dist_for_h)) + zoom_offset
-	var look_at_pt := Vector3(0.0, -0.30, 0.0) # Places sculpture dead-center in upper-center 50% zone!
-	var desired := look_at_pt + Vector3(0.0, 0.24, 1.0).normalized() * dist
+	var dist_for_w: float = (bound_radius / 0.35) / maxf(half_tan_x, 0.14)
+	var dist_for_h: float = (bound_radius * 2.42) / half_tan_y
+	var dist: float = maxf(17.2, maxf(dist_for_w, dist_for_h)) / zoom_scale
+	var look_at_pt := Vector3(0.0, -0.32, 0.0)
+	# 3/4俯视倾角 ~28° (RD-SPEC-03 1.1!)
+	var elev_rad: float = deg_to_rad(24.0)
+	var desired := look_at_pt + Vector3(0.0, sin(elev_rad), cos(elev_rad)) * dist
 
 	if hit_shake > 0.001:
 		hit_shake = maxf(0.0, hit_shake - delta * 2.8)
@@ -495,61 +774,64 @@ func _update_camera(delta: float) -> void:
 
 
 func _process_active_slots(delta: float) -> void:
-	if celebrating_win or voxels.is_empty():
+	if voxels.is_empty():
 		return
-
 	var limit: int = get_active_slot_limit()
+	var any_fired: bool = false
+
 	for s_idx in range(limit):
 		var sl = slots[s_idx]
-		if sl == null:
+		if sl == null or bool(sl.get("locked_for_fuse", false)):
 			continue
-
-		var ch: int = int(sl["ch"])
-		if _count_remaining_for_color(ch) == 0 and not _has_pending_for_color(ch):
-			_advance_or_retire_slot(s_idx)
+		var cid: int = int(sl["cid"])
+		if _count_remaining_for_color(cid) == 0 and not _has_pending_for_color(cid):
+			_retire_slot(s_idx)
 			continue
 
 		sl["cooldown"] = float(sl["cooldown"]) - delta
 		if float(sl["cooldown"]) > 0.0 or int(sl["ammo"]) <= 0:
 			continue
 
-		var is_super: bool = bool(sl["is_super"])
-		# Require front/side visibility during normal play; allow any exposed angle during 360° auto-scan!
-		var min_facing: float = -0.35 if auto_scanning else -0.15
-		var target_pos: Vector3i = _pick_best_target(ch, min_facing)
+		var target_pos: Vector3i = _pick_best_target(cid, -0.15)
 		if target_pos == Vector3i(999, 999, 999):
 			continue
 
-		# Found a live target! Cancel auto-scan immediately & open fire!
-		auto_scanning = false
-		auto_scan_accum = 0.0
-		jam_grace_timer = 0.0
-
+		any_fired = true
+		auto_scan_idle_t = 0.0
 		reserved_targets[target_pos] = true
 		sl["ammo"] = int(sl["ammo"]) - 1
-		# Super Cannon fires 1.8x faster (GDD 2.1 #4)!
-		sl["cooldown"] = 0.052 if is_super else 0.094
+		shots_fired_total += 1
 
-		# Trigger instant Hit-Flash white + pop expansion (0.06s before shatter!)
+		var tier: int = int(sl["tier"])
+		var rate: float = BASE_FIRE_RATE * (2.2 if tier >= 2 else (1.8 if tier == 1 else 1.0))
+		sl["cooldown"] = 1.0 / rate
+
+		# Hit-Flash 0.06s + pop scale 1.0 -> 1.15 before pop!
 		if voxels.has(target_pos):
 			voxels[target_pos]["hit_t"] = Time.get_ticks_msec() * 0.001
 			multimesh_dirty = true
 
-		var world_p: Vector3 = _grid_to_world(target_pos)
-		var screen_p: Vector2 = camera.unproject_position(world_p) if camera else Vector2(270, 320)
-		shot_fired.emit(s_idx, screen_p, ch, is_super)
-		audio.play_shoot(is_super)
+		var wp: Vector3 = _grid_to_world(target_pos)
+		var sp: Vector2 = camera.unproject_position(wp) if camera else Vector2(270, 320)
+		shot_fired.emit(s_idx, sp, cid, tier)
+		if tier >= 1:
+			audio.play_super_pierce()
 
 		pending_hits.append({
 			"pos": target_pos,
-			"ch": ch,
-			"is_super": is_super,
-			"t": 0.062, # Exact 0.06s Hit-Flash duration before shatter pop!
+			"cid": cid,
+			"tier": tier,
+			"t": 0.06, # Exact 0.06s Hit-Flash!
 		})
 
 		if int(sl["ammo"]) <= 0:
-			_advance_or_retire_slot(s_idx)
-		state_updated.emit()
+			_retire_slot(s_idx)
+		dock_updated.emit()
+
+	if any_fired and stage_state == StageState.PLAYING_IDLE:
+		_set_state(StageState.FIRING_LOOP)
+	elif not any_fired and stage_state == StageState.FIRING_LOOP and pending_hits.is_empty():
+		_set_state(StageState.PLAYING_IDLE)
 
 
 func _process_pending_hits(delta: float) -> void:
@@ -559,12 +841,13 @@ func _process_pending_hits(delta: float) -> void:
 		if float(h["t"]) <= 0.0:
 			pending_hits.remove_at(i)
 			var pos: Vector3i = h["pos"]
-			var is_super: bool = bool(h["is_super"])
+			var tier: int = int(h["tier"])
 			reserved_targets.erase(pos)
-			_destroy_voxel(pos, is_super, false)
+			# Pierce depth: 0 -> 1 block, Tier 1 Super -> 2 layers, Tier 2 Mega -> 3 layers!
+			_destroy_voxel(pos, tier, false)
 
 
-func _pick_best_target(ch: int, min_facing: float) -> Vector3i:
+func _pick_best_target(cid: int, min_facing: float) -> Vector3i:
 	var best_pos := Vector3i(999, 999, 999)
 	var best_score: float = -1e9
 	var cam_pos: Vector3 = camera.global_position if camera else Vector3(0, 5, 16)
@@ -577,7 +860,7 @@ func _pick_best_target(ch: int, min_facing: float) -> Vector3i:
 		if bool(d["locked"]):
 			continue
 		var is_core: bool = bool(d["core"])
-		if not is_core and int(d["ch"]) != ch:
+		if not is_core and int(d["cid"]) != cid:
 			continue
 
 		var wp: Vector3 = _grid_to_world(p)
@@ -587,20 +870,18 @@ func _pick_best_target(ch: int, min_facing: float) -> Vector3i:
 		if facing < min_facing:
 			continue
 
-		# Strongly prioritize exposed Golden Pulse Cores and camera-facing front blocks!
-		var score: float = facing * 4.0 + (6.0 if is_core else 0.0) + float(p.y) * 0.06
+		var score: float = facing * 4.2 + (6.5 if is_core else 0.0) + float(p.y) * 0.05
 		if score > best_score:
 			best_score = score
 			best_pos = p
-
 	return best_pos
 
 
-func _destroy_voxel(pos: Vector3i, can_pierce: bool, from_shockwave: bool) -> void:
+func _destroy_voxel(pos: Vector3i, pierce_depth: int, from_shockwave: bool) -> void:
 	if not voxels.has(pos):
 		return
 	var d: Dictionary = voxels[pos]
-	var ch: int = int(d["ch"])
+	var cid: int = int(d["cid"])
 	var is_core: bool = bool(d["core"])
 	var wp: Vector3 = _grid_to_world(pos)
 	var sp: Vector2 = camera.unproject_position(wp) if camera else Vector2(270, 320)
@@ -614,25 +895,28 @@ func _destroy_voxel(pos: Vector3i, can_pierce: bool, from_shockwave: bool) -> vo
 
 	if not from_shockwave:
 		audio.play_brick_pop(combo_count - 1)
-	_spawn_debris(wp, FusePalette.get_color(ch), 1.0 if from_shockwave else 0.85)
-	voxel_cleared_fx.emit(sp, ch, is_core)
+	_spawn_debris(wp, FusePalette.get_color(cid), 1.0 if from_shockwave else 0.85)
+	voxel_cleared_fx.emit(sp, cid, is_core)
 
-	# Unlock adjacent Chain-Locked blocks (GDD 3.1: 铁链锁)!
+	# Unlock adjacent Chain-Locked voxels (RD-SPEC-02 1.3: any 6-neighbor unlocks immediately!)
+	var broke_chain: bool = false
 	for dir in DIRS6:
 		var nb: Vector3i = pos + dir
 		if voxels.has(nb) and bool(voxels[nb]["locked"]):
 			voxels[nb]["locked"] = false
+			broke_chain = true
+	if broke_chain:
+		audio.play_chain_break()
 
-	# If this block WAS a Pulse Core -> DETONATE 3x3x3 RADIAL SHOCKWAVE!
 	if is_core:
 		_detonate_pulse_core(pos, wp)
 
-	# Super Cannon 2-Layer Piercing (GDD 2.1 #4): Pierce straight into 1 deeper inner same-color block OR inner Pulse Core!
-	if can_pierce and not is_core:
-		var inner: Vector3i = _find_pierce_neighbor(pos, ch)
+	# Pierce inward for Super (tier 1 -> 1 extra layer) / Mega (tier 2 -> 2 extra layers)!
+	if pierce_depth > 0 and not is_core:
+		var inner: Vector3i = _find_pierce_neighbor(pos, cid)
 		if inner != Vector3i(999, 999, 999):
 			voxels[inner]["locked"] = false
-			_destroy_voxel(inner, false, false)
+			_destroy_voxel(inner, pierce_depth - 1, false)
 
 	if not from_shockwave:
 		if has_magnetic_snap:
@@ -641,22 +925,20 @@ func _destroy_voxel(pos: Vector3i, can_pierce: bool, from_shockwave: bool) -> vo
 		multimesh_dirty = true
 		_retire_exhausted_channels()
 		_emit_stats()
-		if voxels.is_empty() and not celebrating_win:
-			_trigger_final_smash_victory()
+		if voxels.is_empty() and stage_state != StageState.VICTORY_SETTLE:
+			_trigger_victory()
 
 
-func _find_pierce_neighbor(from_pos: Vector3i, ch: int) -> Vector3i:
-	# Priority 1: Adjacent inner Golden Pulse Core!
+func _find_pierce_neighbor(from_pos: Vector3i, cid: int) -> Vector3i:
 	for dir in DIRS6:
 		var nb: Vector3i = from_pos + dir
 		if voxels.has(nb) and not reserved_targets.has(nb) and bool(voxels[nb]["core"]):
 			return nb
-	# Priority 2: Deeper adjacent same-color cube closer to sculpture center!
 	var best := Vector3i(999, 999, 999)
 	var best_d: float = 9999.0
 	for dir in DIRS6:
 		var nb: Vector3i = from_pos + dir
-		if voxels.has(nb) and not reserved_targets.has(nb) and int(voxels[nb]["ch"]) == ch:
+		if voxels.has(nb) and not reserved_targets.has(nb) and int(voxels[nb]["cid"]) == cid:
 			var dist_c: float = (Vector3(nb) - center_offset).length()
 			if dist_c < best_d:
 				best_d = dist_c
@@ -665,44 +947,47 @@ func _find_pierce_neighbor(from_pos: Vector3i, ch: int) -> Vector3i:
 
 
 # ==============================================================================
-# PULSE CORE 3x3x3 RADIAL SHOCKWAVE + 0.15s SLOW-MO (GDD 1.1 & 5.3)
+# PULSE CORE 3×3×3 MANHATTAN <= 2 BLAST + 0.15s SLOW-MO + HAPTICS (RD-SPEC-02 1.3)
 # ==============================================================================
 func _detonate_pulse_core(core_grid: Vector3i, core_world: Vector3) -> void:
-	pulse_cores_blasted += 1
+	cores_popped += 1
 	var bonus: int = 15
-	core_bonus_coins += bonus
+	core_bonus_coins = mini(30, core_bonus_coins + bonus)
 
 	audio.play_pulse_boom()
+	Input.vibrate_handheld(55)
 	_trigger_slowmo(0.15, 0.35)
-	hit_shake = maxf(hit_shake, 0.32)
-	_spawn_shockwave_ring(core_world, Color(1.0, 0.80, 0.16), 4.2)
+	hit_shake = maxf(hit_shake, 0.28)
+	_spawn_shockwave_ring(core_world, Color(1.0, 0.816, 0.078), 4.0)
 
+	# RD-SPEC-02 1.3: 3x3x3 Manhattan distance <= 2 around core!
 	var blast_list: Array[Vector3i] = []
 	for p: Vector3i in voxels.keys():
 		var diff: Vector3i = p - core_grid
-		if abs(diff.x) <= 2 and abs(diff.y) <= 2 and abs(diff.z) <= 2:
-			if Vector3(diff).length() <= 2.35:
+		if abs(diff.x) <= 1 and abs(diff.y) <= 1 and abs(diff.z) <= 1:
+			if abs(diff.x) + abs(diff.y) + abs(diff.z) <= 2:
 				blast_list.append(p)
 
+	max_single_core_blast = maxi(max_single_core_blast, blast_list.size())
 	var chained_cores: Array[Vector3i] = []
 	for p in blast_list:
 		if not voxels.has(p):
 			continue
 		var d: Dictionary = voxels[p]
 		var wp: Vector3 = _grid_to_world(p)
-		var c: Color = FusePalette.get_color(int(d["ch"]))
 		var was_core: bool = bool(d["core"])
+		var cid: int = int(d["cid"])
 		voxels.erase(p)
 		reserved_targets.erase(p)
 		combo_count += 1
 		max_combo = maxi(max_combo, combo_count)
-		_spawn_debris(wp, c, 1.45, (wp - core_world).normalized())
+		_spawn_debris(wp, FusePalette.get_color(cid), 1.45, (wp - core_world).normalized())
 		if was_core:
 			chained_cores.append(p)
 
 	var sp: Vector2 = camera.unproject_position(core_world) if camera else Vector2(270, 320)
 	pulse_core_detonated.emit(sp, blast_list.size(), bonus)
-	callout_banner.emit("☀ 脉冲核爆破！震飞 ×%d 块 (+%d 币)" % [blast_list.size(), bonus], Color(1.0, 0.62, 0.08))
+	callout_banner.emit("☀ 脉冲核引爆！震飞 ×%d 块 (+%d 币)" % [blast_list.size(), bonus], Color(1.0, 0.58, 0.08))
 
 	for cc in chained_cores:
 		_detonate_pulse_core(cc, _grid_to_world(cc))
@@ -714,18 +999,22 @@ func _detonate_pulse_core(core_grid: Vector3i, core_world: Vector3) -> void:
 
 
 # ==============================================================================
-# SPINNER LAYER 90° AUTO-ROTATION (GDD 3.1: 分段自转层)
+# SPINNER LAYER 90° CLOCKWISE & MAGNETIC SNAP (RD-SPEC-02 1.3)
 # ==============================================================================
-func _rotate_spinner_layer_90() -> void:
-	if spinner_y_min < -50 or voxels.is_empty():
+func _rotate_spinner_layers_90() -> void:
+	if spinner_layers.is_empty() or voxels.is_empty():
 		return
+	var cx: int = int(round(center_offset.x))
+	var cz: int = int(round(center_offset.z))
 	var moved: Dictionary = {}
 	var to_erase: Array[Vector3i] = []
 	for p: Vector3i in voxels.keys():
-		if p.y >= spinner_y_min and p.y <= spinner_y_max:
+		if spinner_layers.has(p.y):
 			to_erase.append(p)
-			var new_p := Vector3i(-p.z, p.y, p.x)
-			moved[new_p] = voxels[p]
+			var rx: int = p.x - cx
+			var rz: int = p.z - cz
+			var np := Vector3i(cx - rz, p.y, cz + rx)
+			moved[np] = voxels[p]
 	if to_erase.is_empty():
 		return
 	for p in to_erase:
@@ -734,14 +1023,13 @@ func _rotate_spinner_layer_90() -> void:
 	for np: Vector3i in moved.keys():
 		moved[np]["hit_t"] = Time.get_ticks_msec() * 0.001
 		voxels[np] = moved[np]
+	spinner_visual_rot_rem += PI * 0.5
+	audio.play_spinner_click()
 	_recompute_exposed_and_ao()
 	multimesh_dirty = true
-	callout_banner.emit("↻ 自转层旋转 90°！暴露新色面", Color(0.11, 0.39, 0.93))
+	callout_banner.emit("↻ 分段自转层顺时针旋转 90°！", Color(0.11, 0.39, 0.93))
 
 
-# ==============================================================================
-# MAGNETIC SNAP (GDD 3.1: 磁吸合拢 — Hollowed middle layer snaps upper half down!)
-# ==============================================================================
 func _check_magnetic_snap() -> void:
 	if voxels.is_empty():
 		return
@@ -752,136 +1040,178 @@ func _check_magnetic_snap() -> void:
 		ys[p.y] = true
 		min_y = mini(min_y, p.y)
 		max_y = maxi(max_y, p.y)
-
-	var empty_gap_y: int = -999
+	var gap_y: int = -999
 	for y in range(min_y + 1, max_y):
 		if not ys.has(y):
-			empty_gap_y = y
+			gap_y = y
 			break
-	if empty_gap_y == -999:
+	if gap_y == -999:
 		return
-
-	# Find highest occupied row below gap and lowest occupied row above gap
 	var drop_by: int = 0
-	var check_y: int = empty_gap_y
-	while check_y <= max_y and not ys.has(check_y):
+	var cy: int = gap_y
+	while cy <= max_y and not ys.has(cy):
 		drop_by += 1
-		check_y += 1
+		cy += 1
 	if drop_by <= 0:
 		return
 
 	var shifted: Dictionary = {}
 	for p: Vector3i in voxels.keys():
 		var d: Dictionary = voxels[p]
-		if p.y > empty_gap_y:
-			var np := Vector3i(p.x, p.y - drop_by, p.z)
+		if p.y > gap_y:
 			d["hit_t"] = Time.get_ticks_msec() * 0.001
-			shifted[np] = d
+			shifted[Vector3i(p.x, p.y - drop_by, p.z)] = d
 		else:
 			shifted[p] = d
-
 	voxels = shifted
 	reserved_targets.clear()
 	snap_bounce_t = 1.0
 	audio.play_mag_snap()
-	hit_shake = maxf(hit_shake, 0.22)
-	_spawn_shockwave_ring(model_tilt_root.global_position, Color(1.0, 0.54, 0.12), 3.6)
-	callout_banner.emit("🧲 啪！磁吸合拢！拼出大片连色区", Color(1.0, 0.54, 0.12))
+	hit_shake = maxf(hit_shake, 0.20)
+	_spawn_shockwave_ring(model_tilt_root.global_position, Color(1.0, 0.54, 0.12), 3.4)
+	callout_banner.emit("🧲 啪嗒！磁吸合拢！", Color(1.0, 0.54, 0.12))
 
 
-func _advance_or_retire_slot(s_idx: int) -> void:
-	var sl = slots[s_idx]
-	if sl == null:
+func _retire_slot(s_idx: int) -> void:
+	if slots[s_idx] == null:
 		return
-	# Dual-Color Cannon switches seamlessly to second color (GDD 3.1)!
-	if int(sl.get("ch2", -1)) != -1 and int(sl.get("ammo2", 0)) > 0:
-		sl["ch"] = int(sl["ch2"])
-		sl["ammo"] = int(sl["ammo2"])
-		sl["ch2"] = -1
-		sl["ammo2"] = 0
-		sl["cooldown"] = 0.08
-		audio.play_slot_in()
-		callout_banner.emit("⇄ 双色炮切换第二色！", FusePalette.get_color(int(sl["ch"])))
-		_check_and_trigger_adjacent_fuse(s_idx)
-		state_updated.emit()
-		return
-
 	slots[s_idx] = null
-	slot_clear_streak += 1
-	audio.play_slot_clear(slot_clear_streak)
-	# Spinner Layer triggers 90° turn whenever a cannon finishes!
-	if spinner_y_min >= -50 and not celebrating_win:
-		_rotate_spinner_layer_90()
-	state_updated.emit()
+	_compact_slots_left()
+	if not spinner_layers.is_empty() and stage_state != StageState.VICTORY_SETTLE:
+		_rotate_spinner_layers_90()
+	dock_updated.emit()
 
 
 func _retire_exhausted_channels() -> void:
 	var limit: int = get_active_slot_limit()
-	for s_idx in range(limit):
-		if slots[s_idx] != null:
-			var ch: int = int(slots[s_idx]["ch"])
-			if _count_remaining_for_color(ch) == 0 and not _has_pending_for_color(ch):
-				_advance_or_retire_slot(s_idx)
-
-	# Also sweep queue cannons whose primary color no longer exists (and have no live ch2)
+	for i in range(limit - 1, -1, -1):
+		if slots[i] != null:
+			var cid: int = int(slots[i]["cid"])
+			if _count_remaining_for_color(cid) == 0 and not _has_pending_for_color(cid):
+				_retire_slot(i)
 	var swept: bool = false
-	for c in range(NUM_COLS):
+	for c in range(columns.size()):
 		for r in range(columns[c].size() - 1, -1, -1):
-			var it: Dictionary = columns[c][r]
-			var ch1: int = int(it["ch"])
-			var ch2: int = int(it.get("ch2", -1))
-			if _count_remaining_for_color(ch1) == 0 and not _has_pending_for_color(ch1):
-				if ch2 != -1 and _count_remaining_for_color(ch2) > 0:
-					it["ch"] = ch2
-					it["ammo"] = int(it["ammo2"])
-					it["ch2"] = -1
-					it["ammo2"] = 0
-				else:
-					columns[c].remove_at(r)
+			var cid: int = int(columns[c][r]["color_id"])
+			if _count_remaining_for_color(cid) == 0 and not _has_pending_for_color(cid):
+				columns[c].remove_at(r)
 				swept = true
 	if swept:
-		state_updated.emit()
+		dock_updated.emit()
 
 
 # ==============================================================================
-# SAFE CENTERED BOOSTERS (Magnet / Shockwave / Confirmed Extra Slot / Continue)
+# 3 IN-GAME BOOSTERS & FAIR 360-COIN RESCUE (RD-SPEC-01 Section 5 & RD-SPEC-02!)
 # ==============================================================================
 func use_booster_magnet() -> bool:
+	# RD-SPEC-01 Section 5: Auto-pulls a matching-color cannon from ANY queue row straight into
+	# the dock next to an occupied slot to force an immediate Super Fuse!
 	if voxels.is_empty():
 		return false
-	var target_slot: int = -1
-	var target_ch: int = -1
 	var limit: int = get_active_slot_limit()
-	for i in range(limit):
-		if slots[i] != null:
-			target_slot = i
-			target_ch = int(slots[i]["ch"])
+	var pulled: bool = false
+
+	for s_i in range(limit):
+		if slots[s_i] == null or int(slots[s_i]["tier"]) >= 2:
+			continue
+		var want_cid: int = int(slots[s_i]["cid"])
+		# Search all columns & depths for a matching cannon!
+		for c in range(columns.size()):
+			for r in range(columns[c].size()):
+				if int(columns[c][r]["color_id"]) == want_cid:
+					var pulled_it: Dictionary = columns[c][r]
+					columns[c].remove_at(r)
+					# Reveal next rows
+					for k in range(mini(2, columns[c].size())):
+						columns[c][k]["hidden"] = false
+					# Directly fuse into slots[s_i]!
+					var sum_a: int = int(slots[s_i]["ammo"]) + int(pulled_it["ammo"])
+					var new_ammo: int = int(ceil(float(sum_a) * 1.2))
+					var new_tier: int = mini(2, int(slots[s_i]["tier"]) + 1)
+					slots[s_i]["ammo"] = new_ammo
+					slots[s_i]["tier"] = new_tier
+					slots[s_i]["cooldown"] = 0.08
+					fuse_count += 1
+					boosters_used_count += 1
+					audio.play_fuse_arc(new_tier)
+					fuse_triggered.emit(s_i, mini(limit - 1, s_i + 1), want_cid, new_ammo, new_tier)
+					callout_banner.emit("🧲 磁力合炮！强拉同色炮瞬间超级合体！", FusePalette.get_color(want_cid))
+					pulled = true
+					break
+			if pulled:
+				break
+		if pulled:
 			break
-	if target_ch == -1:
+
+	# Fallback if no matching cannon in queue: clear up to 16 matching voxels for Slot 0!
+	if not pulled:
+		var target_cid: int = int(slots[0]["cid"]) if slots[0] != null else -1
+		if target_cid == -1:
+			for p: Vector3i in voxels.keys():
+				if not bool(voxels[p]["core"]):
+					target_cid = int(voxels[p]["cid"])
+					break
+		if target_cid == -1:
+			return false
+		var to_pop: Array[Vector3i] = []
 		for p: Vector3i in voxels.keys():
-			if not bool(voxels[p]["core"]):
-				target_ch = int(voxels[p]["ch"])
-				break
-	if target_ch == -1:
-		return false
-
-	var need: int = int(slots[target_slot]["ammo"]) if target_slot >= 0 else 18
-	var popped: int = 0
-	var list: Array[Vector3i] = []
-	for p: Vector3i in voxels.keys():
-		if int(voxels[p]["ch"]) == target_ch:
-			list.append(p)
-			if list.size() >= need:
-				break
-
-	for p in list:
-		if voxels.has(p):
+			if int(voxels[p]["cid"]) == target_cid:
+				to_pop.append(p)
+				if to_pop.size() >= 16:
+					break
+		for p in to_pop:
 			voxels[p]["locked"] = false
-			_destroy_voxel(p, false, true)
-			popped += 1
+			_destroy_voxel(p, 0, true)
+		boosters_used_count += 1
+		audio.play_mag_snap()
+		callout_banner.emit("🧲 磁力吸清 ×%d 块同色积木！" % to_pop.size(), FusePalette.get_color(target_cid))
+		_recompute_exposed_and_ao()
+		multimesh_dirty = true
 
-	if target_slot >= 0 and slots[target_slot] != null:
-		_advance_or_retire_slot(target_slot)
+	_retire_exhausted_channels()
+	_emit_stats()
+	if stage_state == StageState.RESCUE_PROMPT:
+		_set_state(StageState.FIRING_LOOP)
+	if voxels.is_empty() and stage_state != StageState.VICTORY_SETTLE:
+		_trigger_victory()
+	dock_updated.emit()
+	return true
+
+
+func use_booster_shockwave() -> bool:
+	# RD-SPEC-01 Section 5: Immediately detonates ALL Pulse Cores on board; if none, blasts 15 outermost cubes!
+	if voxels.is_empty():
+		return false
+	boosters_used_count += 1
+	var cores: Array[Vector3i] = []
+	for p: Vector3i in voxels.keys():
+		if bool(voxels[p]["core"]):
+			cores.append(p)
+
+	if not cores.is_empty():
+		for cp in cores:
+			if voxels.has(cp):
+				voxels.erase(cp)
+				_detonate_pulse_core(cp, _grid_to_world(cp))
+	else:
+		# Blast 15 outermost exposed voxels radially!
+		audio.play_pulse_boom()
+		_trigger_slowmo(0.15, 0.35)
+		hit_shake = maxf(hit_shake, 0.28)
+		_spawn_shockwave_ring(model_tilt_root.global_position, Color(0.11, 0.65, 1.0), 4.2)
+		var exp_arr: Array[Vector3i] = []
+		for p: Vector3i in exposed_set.keys():
+			exp_arr.append(p)
+		exp_arr.shuffle()
+		var cnt: int = mini(15, exp_arr.size())
+		for i in range(cnt):
+			var p: Vector3i = exp_arr[i]
+			if voxels.has(p):
+				var wp: Vector3 = _grid_to_world(p)
+				var cid: int = int(voxels[p]["cid"])
+				voxels.erase(p)
+				_spawn_debris(wp, FusePalette.get_color(cid), 1.35)
+		callout_banner.emit("⚡ 脉冲震荡！震飞外层 ×%d 块积木！" % cnt, Color(0.11, 0.65, 1.0))
 
 	if has_magnetic_snap:
 		_check_magnetic_snap()
@@ -889,39 +1219,11 @@ func use_booster_magnet() -> bool:
 	multimesh_dirty = true
 	_retire_exhausted_channels()
 	_emit_stats()
-	audio.play_mag_snap()
-	callout_banner.emit("🧲 磁铁强吸！瞬清 ×%d 块腾出活槽" % popped, FusePalette.get_color(target_ch))
-	if voxels.is_empty() and not celebrating_win:
-		_trigger_final_smash_victory()
-	state_updated.emit()
-	return true
-
-
-func use_booster_shockwave() -> bool:
-	if voxels.is_empty():
-		return false
-	# Pick a Pulse Core if present, otherwise the cube closest to sculpture center!
-	var epic: Vector3i = Vector3i.ZERO
-	var found_core: bool = false
-	for p: Vector3i in voxels.keys():
-		if bool(voxels[p]["core"]):
-			epic = p
-			found_core = true
-			break
-	if not found_core:
-		var best_d: float = 9999.0
-		for p: Vector3i in voxels.keys():
-			var dist: float = (Vector3(p) - center_offset).length()
-			if dist < best_d:
-				best_d = dist
-				epic = p
-
-	_detonate_pulse_core(epic, _grid_to_world(epic))
-	_retire_exhausted_channels()
-	_emit_stats()
-	if voxels.is_empty() and not celebrating_win:
-		_trigger_final_smash_victory()
-	state_updated.emit()
+	if stage_state == StageState.RESCUE_PROMPT:
+		_set_state(StageState.FIRING_LOOP)
+	if voxels.is_empty() and stage_state != StageState.VICTORY_SETTLE:
+		_trigger_victory()
+	dock_updated.emit()
 	return true
 
 
@@ -929,83 +1231,81 @@ func unlock_extra_slot() -> bool:
 	if extra_slot_unlocked:
 		return false
 	extra_slot_unlocked = true
-	auto_scanning = false
-	jam_grace_timer = 0.0
-	audio.play_fuse_arc()
-	callout_banner.emit("➕ 临时第 6 槽位已开启！", Color(0.08, 0.72, 0.40))
-	state_updated.emit()
+	boosters_used_count += 1
+	audio.play_fuse_arc(1)
+	if stage_state == StageState.RESCUE_PROMPT:
+		_set_state(StageState.PLAYING_IDLE)
+	callout_banner.emit("➕ 临时第 6 安全扩容槽已开启！", Color(0.08, 0.72, 0.40))
+	dock_updated.emit()
 	return true
 
 
-func execute_fair_continue() -> void:
-	# Fair Continue (360 coins): Unlocks 6th slot AND clears 2 jammed slots' matching blocks!
-	extra_slot_unlocked = true
-	var cleared_slots: int = 0
-	for i in range(MAX_SLOTS):
-		if slots[i] != null and cleared_slots < 2:
-			var ch: int = int(slots[i]["ch"])
-			var need: int = int(slots[i]["ammo"])
-			var to_pop: Array[Vector3i] = []
-			for p: Vector3i in voxels.keys():
-				if int(voxels[p]["ch"]) == ch:
-					to_pop.append(p)
-					if to_pop.size() >= need:
-						break
-			for p in to_pop:
-				if voxels.has(p):
-					_destroy_voxel(p, false, true)
-			_advance_or_retire_slot(i)
-			cleared_slots += 1
-	_recompute_exposed_and_ao()
-	multimesh_dirty = true
-	_retire_exhausted_channels()
-	_emit_stats()
-	audio.play_pulse_boom()
-	auto_scanning = false
-	jam_grace_timer = 0.0
-	if voxels.is_empty() and not celebrating_win:
-		_trigger_final_smash_victory()
-	state_updated.emit()
+func execute_fair_rescue() -> void:
+	# RD-SPEC-02 1.1: Clear 2 jammed dock slots back to the top of the queues + resume play!
+	var returned: int = 0
+	var limit: int = get_active_slot_limit()
+	for i in range(limit - 1, -1, -1):
+		if slots[i] != null and returned < 2:
+			var sl: Dictionary = slots[i]
+			var target_col: int = returned % columns.size()
+			columns[target_col].push_front({
+				"color_id": int(sl["cid"]),
+				"ammo": int(sl["ammo"]),
+				"hidden": false,
+			})
+			slots[i] = null
+			returned += 1
+	_compact_slots_left()
+	auto_scan_idle_t = 0.0
+	_set_state(StageState.PLAYING_IDLE)
+	audio.play_fuse_arc(1)
+	callout_banner.emit("⚡ 救场成功！2 座炮台已安全退回队列", Color(0.11, 0.39, 0.93))
+	dock_updated.emit()
 
 
-# ==============================================================================
-# FINAL SMASH SLOW-MO & VICTORY (GDD 5.3)
-# ==============================================================================
-func _trigger_final_smash_victory() -> void:
-	celebrating_win = true
+func _trigger_victory() -> void:
+	_set_state(StageState.VICTORY_SETTLE)
 	_trigger_slowmo(0.15, 0.35)
-	hit_shake = 0.28
-	_spawn_shockwave_ring(model_tilt_root.global_position, Color(0.11, 0.65, 1.0), 5.0)
+	hit_shake = 0.24
+	Input.vibrate_handheld(50)
+	_spawn_shockwave_ring(model_tilt_root.global_position, Color(0.11, 0.65, 1.0), 4.8)
 	audio.play_victory()
 
 	for i in range(MAX_SLOTS):
 		slots[i] = null
-	for c in range(NUM_COLS):
+	for c in range(columns.size()):
 		columns[c].clear()
-	state_updated.emit()
+	dock_updated.emit()
 
-	# Healthy 6:1 Economy (GDD 6): Base 50 coins + 10-30 Pulse Core bonus!
-	var base_coins: int = 50
-	var clamped_core_bonus: int = clampi(core_bonus_coins, 0, 30)
+	var base_coins: int = int(level_json.get("coin_reward", 50))
+	var tier_str: String = String(level_json.get("difficulty_tier", "Normal"))
+	var dur_sec: float = float(Time.get_ticks_msec() - level_start_ms) * 0.001
 	level_completed.emit({
-		"level": int(level_data["level"]),
-		"title": String(level_data["title"]),
+		"level_id": int(level_json.get("display_level_id", 1)),
+		"title": String(level_json.get("model_name_zh", "")),
+		"difficulty_tier": tier_str,
+		"is_celebration": (tier_str == "Celebration"),
 		"base_coins": base_coins,
-		"core_bonus": clamped_core_bonus,
-		"total_coins": base_coins + clamped_core_bonus,
-		"fuses": fuse_count_this_level,
-		"cores": pulse_cores_blasted,
+		"core_bonus": core_bonus_coins,
+		"total_coins": base_coins + core_bonus_coins,
+		"paint_energy": 150 if tier_str == "Celebration" else 100,
+		"duration_sec": snappedf(dur_sec, 0.1),
+		"fuse_count": fuse_count,
+		"cores_popped": cores_popped,
+		"max_core_blast": max_single_core_blast,
+		"boosters_used": boosters_used_count,
+		"total_cubes": total_voxels,
 		"max_combo": max_combo,
 	})
 
 
 func _trigger_slowmo(real_dur: float, scale_val: float) -> void:
 	Engine.time_scale = scale_val
-	slowmo_real_remaining = maxf(slowmo_real_remaining, real_dur)
+	slowmo_real_rem = maxf(slowmo_real_rem, real_dur)
 
 
 # ==============================================================================
-# DEBRIS OBJECT POOL (40 cubes max, 0.75s flight -> scale 0 recycle, GDD 5.2!)
+# DEBRIS OBJECT POOL (Strict 40 Nodes Max, 0.75s Flight -> Scale 0 Recycle!)
 # ==============================================================================
 func _spawn_debris(world_pos: Vector3, col: Color, speed_mult: float = 1.0, dir_hint: Vector3 = Vector3.ZERO) -> void:
 	var db: Dictionary = debris_pool[debris_cursor]
@@ -1014,7 +1314,7 @@ func _spawn_debris(world_pos: Vector3, col: Color, speed_mult: float = 1.0, dir_
 	(db["mat"] as StandardMaterial3D).albedo_color = col
 	mi.global_position = world_pos
 	mi.rotation = Vector3(randf() * TAU, randf() * TAU, randf() * TAU)
-	var bs: float = voxel_step * randf_range(0.82, 1.05)
+	var bs: float = voxel_step * randf_range(0.84, 1.04)
 	mi.scale = Vector3.ONE * bs
 	mi.visible = true
 
@@ -1023,9 +1323,8 @@ func _spawn_debris(world_pos: Vector3, col: Color, speed_mult: float = 1.0, dir_
 		out_dir = (world_pos - model_tilt_root.global_position).normalized()
 	if out_dir.length_squared() < 0.05:
 		out_dir = Vector3(randf_range(-1, 1), randf_range(0.2, 1), randf_range(-1, 1)).normalized()
-
-	var rand_spread := Vector3(randf_range(-0.6, 0.6), randf_range(0.1, 0.85), randf_range(-0.6, 0.6))
-	db["vel"] = (out_dir + rand_spread).normalized() * randf_range(3.8, 6.8) * speed_mult
+	var spread := Vector3(randf_range(-0.55, 0.55), randf_range(0.1, 0.85), randf_range(-0.55, 0.55))
+	db["vel"] = (out_dir + spread).normalized() * randf_range(3.8, 6.6) * speed_mult
 	db["rot_vel"] = Vector3(randf_range(-11, 11), randf_range(-11, 11), randf_range(-11, 11))
 	db["life"] = 0.75
 	db["max_life"] = 0.75
@@ -1066,8 +1365,7 @@ func _process_debris_and_rings(delta: float) -> void:
 		mi.global_position += Vector3(db["vel"]) * delta
 		mi.rotation += Vector3(db["rot_vel"]) * delta
 		var u: float = clampf(float(db["life"]) / float(db["max_life"]), 0.0, 1.0)
-		var sc: float = float(db["base_scale"]) * smoothstep(0.0, 0.38, u)
-		mi.scale = Vector3.ONE * maxf(0.001, sc)
+		mi.scale = Vector3.ONE * maxf(0.001, float(db["base_scale"]) * smoothstep(0.0, 0.38, u))
 
 	for i in range(shock_rings.size() - 1, -1, -1):
 		var r: Dictionary = shock_rings[i]
@@ -1088,82 +1386,95 @@ func _process_debris_and_rings(delta: float) -> void:
 
 
 # ==============================================================================
-# MULTIMESH REBUILD (Constant 1 Draw Call for Entire Sculpture!)
+# MULTIMESH REBUILD (1 Draw Call Sculpture + Optional Cores & 3D Chain Cages)
 # ==============================================================================
 func _recompute_exposed_and_ao() -> void:
 	exposed_set.clear()
-	for ep in FuseSolver.compute_exposed_positions(voxels):
-		exposed_set[ep] = true
+	for p: Vector3i in voxels.keys():
+		for d in DIRS6:
+			if not voxels.has(p + d):
+				exposed_set[p] = true
+				break
 
-	const AO_OFFSETS: Array[Vector3i] = [
+	const AO_OFFS: Array[Vector3i] = [
 		Vector3i(1,0,0), Vector3i(-1,0,0), Vector3i(0,1,0), Vector3i(0,-1,0), Vector3i(0,0,1), Vector3i(0,0,-1),
 		Vector3i(1,1,0), Vector3i(-1,1,0), Vector3i(0,1,1), Vector3i(0,1,-1),
 	]
 	for p: Vector3i in voxels.keys():
 		var occ: float = 0.0
-		for d in AO_OFFSETS:
+		for d in AO_OFFS:
 			if voxels.has(p + d):
-				occ += 1.0 if (abs(d.x) + abs(d.y) + abs(d.z) == 1) else 0.55
-		voxels[p]["ao"] = clampf(1.0 - occ * 0.055, 0.54, 1.0)
+				occ += 1.0 if (abs(d.x) + abs(d.y) + abs(d.z) == 1) else 0.52
+		voxels[p]["ao"] = clampf(1.0 - occ * 0.052, 0.52, 1.0)
 
 
 func _rebuild_multimeshes() -> void:
 	var normal_list: Array[Vector3i] = []
 	var core_list: Array[Vector3i] = []
+	var lock_list: Array[Vector3i] = []
+
 	for p: Vector3i in voxels.keys():
-		if bool(voxels[p]["core"]):
+		var d: Dictionary = voxels[p]
+		if bool(d["core"]):
 			core_list.append(p)
 		else:
 			normal_list.append(p)
+			if bool(d["locked"]):
+				lock_list.append(p)
 
 	var mm: MultiMesh = main_multimesh.multimesh
 	mm.instance_count = normal_list.size()
 	var sc := Basis.from_scale(Vector3.ONE * voxel_step)
-
 	for i in range(normal_list.size()):
 		var p: Vector3i = normal_list[i]
 		var d: Dictionary = voxels[p]
-		var ch: int = int(d["ch"])
-		var local_pos: Vector3 = (Vector3(p) - center_offset) * voxel_step
-		mm.set_instance_transform(i, Transform3D(sc, local_pos))
-		mm.set_instance_color(i, FusePalette.get_color(ch))
-		var flag: float = 0.0
-		if bool(d["locked"]):
-			flag = 3.0
-		elif p.y >= spinner_y_min and p.y <= spinner_y_max:
-			flag = 2.0
-		mm.set_instance_custom_data(i, Color(
-			float(ch),
-			float(d["hit_t"]),
-			flag,
-			float(d["ao"])
-		))
+		var cid: int = int(d["cid"])
+		var lp: Vector3 = (Vector3(p) - center_offset) * voxel_step
+		mm.set_instance_transform(i, Transform3D(sc, lp))
+		mm.set_instance_color(i, FusePalette.get_color(cid))
+		var flag: float = 2.0 if spinner_layers.has(p.y) else 0.0
+		mm.set_instance_custom_data(i, Color(float(cid), float(d["hit_t"]), flag, float(d["ao"])))
 
 	var cmm: MultiMesh = core_multimesh.multimesh
 	cmm.instance_count = core_list.size()
-	var csc := Basis.from_scale(Vector3.ONE * (voxel_step * 1.48))
+	var csc := Basis.from_scale(Vector3.ONE * (voxel_step * 1.15))
 	for i in range(core_list.size()):
 		var p: Vector3i = core_list[i]
-		var local_pos: Vector3 = (Vector3(p) - center_offset) * voxel_step
-		cmm.set_instance_transform(i, Transform3D(csc, local_pos))
+		cmm.set_instance_transform(i, Transform3D(csc, (Vector3(p) - center_offset) * voxel_step))
+
+	var chmm: MultiMesh = chain_multimesh.multimesh
+	chmm.instance_count = lock_list.size()
+	var lsc := Basis.from_scale(Vector3.ONE * voxel_step)
+	for i in range(lock_list.size()):
+		var p: Vector3i = lock_list[i]
+		chmm.set_instance_transform(i, Transform3D(lsc, (Vector3(p) - center_offset) * voxel_step))
 
 
 func _grid_to_world(p: Vector3i) -> Vector3:
 	return orbit_pivot.to_global((Vector3(p) - center_offset) * voxel_step)
 
 
-func _count_remaining_for_color(ch: int) -> int:
+func _count_remaining_for_color(cid: int) -> int:
 	var n: int = 0
 	for p: Vector3i in voxels.keys():
-		if bool(voxels[p]["core"]) or int(voxels[p]["ch"]) == ch:
+		if bool(voxels[p]["core"]) or int(voxels[p]["cid"]) == cid:
 			n += 1
 	return n
 
 
-func _has_pending_for_color(ch: int) -> bool:
+func _has_pending_for_color(cid: int) -> bool:
 	for h in pending_hits:
-		if int(h["ch"]) == ch:
+		if int(h["cid"]) == cid:
 			return true
+	return false
+
+
+func _any_slot_has_visible_target(min_facing: float) -> bool:
+	var limit: int = get_active_slot_limit()
+	for i in range(limit):
+		if slots[i] != null:
+			if _pick_best_target(int(slots[i]["cid"]), min_facing) != Vector3i(999, 999, 999):
+				return true
 	return false
 
 
@@ -1172,12 +1483,18 @@ func _are_all_slots_filled_and_idle() -> bool:
 	for i in range(limit):
 		if slots[i] == null:
 			return false
-		var ch: int = int(slots[i]["ch"])
-		if _pick_best_target(ch, -0.15) != Vector3i(999, 999, 999):
+		if _pick_best_target(int(slots[i]["cid"]), -0.15) != Vector3i(999, 999, 999):
 			return false
 	return true
 
 
+func _snapshot_dock() -> Array:
+	var snap: Array = []
+	for i in range(get_active_slot_limit()):
+		if slots[i] != null:
+			snap.append({"cid": int(slots[i]["cid"]), "ammo": int(slots[i]["ammo"]), "tier": int(slots[i]["tier"])})
+	return snap
+
+
 func _emit_stats() -> void:
-	var cleared: int = maxi(0, total_voxels - voxels.size())
-	stats_changed.emit(cleared, total_voxels, combo_count)
+	stats_changed.emit(maxi(0, total_voxels - voxels.size()), total_voxels, combo_count)

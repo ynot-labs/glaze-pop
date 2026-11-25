@@ -1,48 +1,49 @@
 class_name FusePalette
 extends RefCounted
 
-## Exact High-Contrast 6-Color Arcade Safety Palette (GDD Section 2.2)
-## Zero ambiguous near-colors! Crisp white text outline + optional micro-symbols.
+## Strict Version B 6-Color Safety Palette (RD-SPEC-03 Section 1.2)
+## 1-based Color IDs matching levels_v1_60_config.csv & level_XXX.json!
+##  1: Cobalt Blue #1D63ED (Solid Circle)
+##  2: Coral Red #FF4D4F (Equilateral Triangle)
+##  3: Vibrant Orange #FF8A1F (Diamond)
+##  4: Emerald Green #14B866 (Square)
+##  5: Sun Yellow #FFD014 (5-Point Star)
+##  6: Electric Purple #8B5CF6 (Cross Star, unlocked Lv.43)
 
-const COLORS: Array[Dictionary] = [
-	{
-		"id": 0,
+const COLORS: Dictionary = {
+	1: {
 		"name": "钴蓝",
 		"hex": "#1D63ED",
 		"color": Color(0.114, 0.388, 0.929),
 		"dark": Color(0.065, 0.235, 0.650),
 		"light": Color(0.360, 0.590, 1.000),
-		"symbol": "○",
+		"symbol": "●",
 	},
-	{
-		"id": 1,
+	2: {
 		"name": "珊瑚红",
 		"hex": "#FF4D4F",
 		"color": Color(1.000, 0.302, 0.310),
 		"dark": Color(0.760, 0.145, 0.165),
 		"light": Color(1.000, 0.540, 0.545),
-		"symbol": "◆",
+		"symbol": "▲",
 	},
-	{
-		"id": 2,
+	3: {
 		"name": "活力橘",
 		"hex": "#FF8A1F",
 		"color": Color(1.000, 0.541, 0.122),
 		"dark": Color(0.760, 0.340, 0.040),
 		"light": Color(1.000, 0.720, 0.380),
-		"symbol": "▲",
+		"symbol": "◆",
 	},
-	{
-		"id": 3,
+	4: {
 		"name": "翡翠绿",
 		"hex": "#14B866",
 		"color": Color(0.078, 0.722, 0.400),
 		"dark": Color(0.035, 0.480, 0.250),
 		"light": Color(0.320, 0.870, 0.590),
-		"symbol": "＋",
+		"symbol": "■",
 	},
-	{
-		"id": 4,
+	5: {
 		"name": "阳光黄",
 		"hex": "#FFD014",
 		"color": Color(1.000, 0.816, 0.078),
@@ -50,60 +51,52 @@ const COLORS: Array[Dictionary] = [
 		"light": Color(1.000, 0.910, 0.420),
 		"symbol": "★",
 	},
-	{
-		"id": 5,
+	6: {
 		"name": "电光紫",
 		"hex": "#8B5CF6",
 		"color": Color(0.545, 0.361, 0.965),
 		"dark": Color(0.350, 0.180, 0.720),
 		"light": Color(0.720, 0.580, 1.000),
-		"symbol": "□",
+		"symbol": "✦",
 	},
-]
+}
 
-const ISLAND_THEMES: Array[Dictionary] = [
+## V1.0 2 Chapters × 5 Paintable 3D Island Modules (RD-SPEC-02 Section 4.1)
+const ISLAND_CHAPTERS: Array[Dictionary] = [
 	{
 		"id": 0,
-		"name": "云端游乐园",
-		"subtitle": "Cloud Toy Park",
-		"landmarks": ["摩天轮", "彩虹拱门", "扭蛋屋", "旋转木马", "星星灯塔"],
-		"base_color": Color(0.24, 0.78, 0.48),
-		"accent_colors": [Color(1.0, 0.30, 0.31), Color(0.11, 0.39, 0.93), Color(1.0, 0.82, 0.08), Color(1.0, 0.54, 0.12), Color(0.55, 0.36, 0.96)],
+		"chapter_key": "Ch1_积木启航岛",
+		"name": "积木启航岛",
+		"subtitle": "Ch.1 · Lv.1–30",
+		"glb_path": "res://assets/fuse/models/island_ch1_sail.glb",
+		"modules": ["火箭发射台", "机器人雕像", "海角灯塔", "信号雷达站", "空间站核心"],
+		"completion_coins": 300,
+		"completion_stamina_min": 30,
 	},
 	{
 		"id": 1,
-		"name": "霓虹街机城",
-		"subtitle": "Neon Arcade City",
-		"landmarks": ["像素门楼", "街机巨塔", "全息广告", "电玩广场", "超频信号站"],
-		"base_color": Color(0.24, 0.30, 0.52),
-		"accent_colors": [Color(0.11, 0.68, 1.0), Color(1.0, 0.30, 0.54), Color(0.55, 0.36, 0.96), Color(1.0, 0.82, 0.08), Color(0.08, 0.82, 0.52)],
-	},
-	{
-		"id": 2,
-		"name": "积木水上乐园",
-		"subtitle": "Block Splash Park",
-		"landmarks": ["冲浪滑梯", "珊瑚灯塔", "帆船码头", "海星舞台", "喷泉中心"],
-		"base_color": Color(0.18, 0.74, 0.88),
-		"accent_colors": [Color(1.0, 0.54, 0.12), Color(1.0, 0.82, 0.08), Color(0.08, 0.72, 0.40), Color(1.0, 0.30, 0.31), Color(0.11, 0.39, 0.93)],
-	},
-	{
-		"id": 3,
-		"name": "糖果太空站",
-		"subtitle": "Candy Space Station",
-		"landmarks": ["火箭发射坪", "行星圆顶", "能量反应堆", "星环轨道", "银河灯塔"],
-		"base_color": Color(0.42, 0.34, 0.74),
-		"accent_colors": [Color(1.0, 0.82, 0.08), Color(1.0, 0.30, 0.31), Color(0.11, 0.62, 1.0), Color(1.0, 0.54, 0.12), Color(0.08, 0.82, 0.52)],
+		"chapter_key": "Ch2_街头甜品坊",
+		"name": "街头甜品坊",
+		"subtitle": "Ch.2 · Lv.31–60",
+		"glb_path": "res://assets/fuse/models/island_ch2_dessert.glb",
+		"modules": ["甜甜圈拱门", "珍珠奶茶屋", "冰激凌餐车", "马卡龙高塔", "梦幻甜品城堡"],
+		"completion_coins": 300,
+		"completion_stamina_min": 30,
 	},
 ]
 
-static func get_color(ch: int) -> Color:
-	return COLORS[clampi(ch, 0, COLORS.size() - 1)]["color"]
 
-static func get_dark(ch: int) -> Color:
-	return COLORS[clampi(ch, 0, COLORS.size() - 1)]["dark"]
+static func get_color(cid: int) -> Color:
+	return COLORS[clampi(cid, 1, 6)]["color"]
 
-static func get_light(ch: int) -> Color:
-	return COLORS[clampi(ch, 0, COLORS.size() - 1)]["light"]
 
-static func get_symbol(ch: int) -> String:
-	return String(COLORS[clampi(ch, 0, COLORS.size() - 1)]["symbol"])
+static func get_dark(cid: int) -> Color:
+	return COLORS[clampi(cid, 1, 6)]["dark"]
+
+
+static func get_light(cid: int) -> Color:
+	return COLORS[clampi(cid, 1, 6)]["light"]
+
+
+static func get_symbol(cid: int) -> String:
+	return String(COLORS[clampi(cid, 1, 6)]["symbol"])
