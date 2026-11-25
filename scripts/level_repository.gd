@@ -2,10 +2,10 @@ class_name LevelRepository
 extends RefCounted
 
 ## V1.0 60-Level On-Demand JSON Loader & Post-Lv.60 Daily Master Pool (RD-SPEC-02 Section 2.2)
-## Loads compact <= 5 KB JSON blueprints from res://data/levels/<model_id>.json on demand,
-## releasing previous level caches to stay strictly under 300 MB mobile RAM budget!
+## Uses pure JSON manifest (res://data/levels_manifest.json) instead of .csv so Godot's
+## CSV-to-Translation importer NEVER strips the level manifest on WebGL2 / iOS / Android exports!
 
-const CSV_PATH: String = "res://data/levels_v1_60_config.csv"
+const MANIFEST_PATH: String = "res://data/levels_manifest.json"
 const LEVELS_DIR: String = "res://data/levels/"
 
 var manifest: Array[Dictionary] = [] # 60 entries indexed 0..59
@@ -13,25 +13,17 @@ var manifest: Array[Dictionary] = [] # 60 entries indexed 0..59
 
 func load_manifest() -> void:
 	manifest.clear()
-	if not FileAccess.file_exists(CSV_PATH):
-		push_error("Missing 60-level CSV manifest: " + CSV_PATH)
+	if not FileAccess.file_exists(MANIFEST_PATH):
+		push_error("Missing 60-level JSON manifest: " + MANIFEST_PATH)
 		return
-	var f := FileAccess.open(CSV_PATH, FileAccess.READ)
-	if f == null:
+	var txt: String = FileAccess.get_file_as_string(MANIFEST_PATH)
+	var parsed = JSON.parse_string(txt)
+	if typeof(parsed) != TYPE_ARRAY:
+		push_error("Invalid manifest JSON array: " + MANIFEST_PATH)
 		return
-	var header: PackedStringArray = f.get_csv_line()
-	while not f.eof_reached():
-		var cols: PackedStringArray = f.get_csv_line()
-		if cols.size() < 15:
-			continue
-		var lid_str: String = cols[0].strip_edges()
-		if not lid_str.is_valid_int():
-			continue
-		var row := {}
-		for i in range(mini(header.size(), cols.size())):
-			row[header[i].strip_edges()] = cols[i].strip_edges()
-		manifest.append(row)
-	f.close()
+	for item in parsed:
+		if typeof(item) == TYPE_DICTIONARY:
+			manifest.append(item)
 
 
 func get_total_handcrafted_levels() -> int:
@@ -50,6 +42,8 @@ func get_manifest_row(level_id: int) -> Dictionary:
 func load_level_json(level_id: int) -> Dictionary:
 	if manifest.is_empty():
 		load_manifest()
+	if manifest.is_empty():
+		return {}
 	var is_endless: bool = level_id > manifest.size()
 	var resolved_id: int = _resolve_level_id(level_id)
 	var row: Dictionary = manifest[clampi(resolved_id - 1, 0, manifest.size() - 1)]
@@ -83,7 +77,6 @@ func _resolve_level_id(level_id: int) -> int:
 	var pool: Array[int] = []
 	for lv in range(11, n + 1):
 		pool.append(lv)
-	# Fisher-Yates shuffle deterministically for today's global Daily Master Pool
 	for i in range(pool.size() - 1, 0, -1):
 		var j: int = rng.randi_range(0, i)
 		var tmp: int = pool[i]

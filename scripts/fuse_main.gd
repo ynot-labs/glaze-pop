@@ -22,6 +22,7 @@ var services: StoreServices
 var repo: LevelRepository
 var stage: FuseStage
 var island_view: IslandPaintView
+var home_lobby: HomeLobbyView
 var studio_font: Font
 var icons: Dictionary = {}
 
@@ -140,8 +141,9 @@ func _ready() -> void:
 	_build_version_b_hud()
 	_connect_signals()
 
-	# Cold-start directly into current level (RD-SPEC-03 2.2: <= 3.5s direct into Lv.1, zero splash spam!)
+	# Load current level in background AND present polished Home Lobby on launch!
 	_start_level(services.current_level, false)
+	_show_home_lobby()
 
 
 func _preload_svg_icons() -> void:
@@ -319,17 +321,33 @@ func _build_version_b_hud() -> void:
 	btn_island_icon.pressed.connect(func(): _open_island_view(false))
 	prog_row.add_child(btn_island_icon)
 
-	# Top-Right: Pure White Rounded Square Settings Button (SVG Gear)
+	# Top-Right: Home Button + Pure White Rounded Square Settings Button (SVG Gear)
+	var right_h := HBoxContainer.new()
+	right_h.add_theme_constant_override("separation", 6)
+	right_h.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	top_bar.add_child(right_h)
+
+	var btn_home := Button.new()
+	btn_home.custom_minimum_size = Vector2(42, 46)
+	btn_home.text = "⌂"
+	_style_white_card_btn(btn_home, 14)
+	btn_home.add_theme_font_size_override("font_size", 22)
+	btn_home.add_theme_color_override("font_color", Color(0.22, 0.30, 0.42))
+	btn_home.pressed.connect(func():
+		audio.play_ui_click()
+		_show_home_lobby()
+	)
+	right_h.add_child(btn_home)
+
 	var btn_settings := Button.new()
 	btn_settings.custom_minimum_size = Vector2(46, 46)
-	btn_settings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_style_white_card_btn(btn_settings, 14)
 	var gear_ic := _make_svg_rect("icon_settings", Vector2(24, 24))
 	gear_ic.set_anchors_preset(Control.PRESET_CENTER)
 	gear_ic.offset_left = -12; gear_ic.offset_top = -12; gear_ic.offset_right = 12; gear_ic.offset_bottom = 12
 	btn_settings.add_child(gear_ic)
 	btn_settings.pressed.connect(_open_settings_modal)
-	top_bar.add_child(btn_settings)
+	right_h.add_child(btn_settings)
 
 	# FTUE Lv.2 Translucent 360° Swipe Arrow Banner (hidden unless Lv.2 FTUE!)
 	ftue_swipe_banner = PanelContainer.new()
@@ -532,19 +550,43 @@ func _build_version_b_hud() -> void:
 	island_view = IslandPaintView.new()
 	island_view.setup(audio, services, studio_font)
 	island_view.closed.connect(_on_island_closed)
-	island_view.module_painted.connect(func(_c, _m, _r, _done): _refresh_top_hud())
+	island_view.module_painted.connect(func(_c, _m, _r, _done):
+		_refresh_top_hud()
+		if home_lobby and home_lobby.visible:
+			home_lobby.refresh()
+	)
 	root_ui.add_child(island_view)
+
+	home_lobby = HomeLobbyView.new()
+	home_lobby.setup(audio, services, repo, icons, studio_font)
+	home_lobby.play_pressed.connect(func():
+		home_lobby.visible = false
+		stage.stage_active = true
+		audio.play_chapter_bgm(services.island_chapter)
+	)
+	home_lobby.open_island_pressed.connect(func(): _open_island_view(false))
+	home_lobby.open_levels_pressed.connect(_open_settings_modal)
+	home_lobby.open_tasks_pressed.connect(_open_settings_modal)
+	home_lobby.open_shop_pressed.connect(_open_shop_modal)
+	home_lobby.open_settings_pressed.connect(_open_settings_modal)
+	root_ui.add_child(home_lobby)
+
+
+func _show_home_lobby() -> void:
+	stage.stage_active = false
+	home_lobby.refresh()
+	home_lobby.visible = true
 
 
 func _make_svg_rect(icon_key: String, sz: Vector2) -> TextureRect:
-	var tr := TextureRect.new()
-	tr.custom_minimum_size = sz
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var tex_rect := TextureRect.new()
+	tex_rect.custom_minimum_size = sz
+	tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if icons.has(icon_key):
-		tr.texture = icons[icon_key]
-	return tr
+		tex_rect.texture = icons[icon_key]
+	return tex_rect
 
 
 func _make_svg_booster_btn(icon_key: String, cost_str: String) -> Array:
@@ -1078,6 +1120,9 @@ func _start_level(lv: int, is_retry: bool) -> void:
 	rescue_modal.visible = false
 	extra_slot_confirm_modal.visible = false
 	settings_modal.visible = false
+	if home_lobby:
+		home_lobby.visible = false
+	stage.stage_active = true
 	ftue_swipe_banner.visible = false
 	flying_cannons.clear()
 	laser_streaks.clear()
@@ -1759,10 +1804,15 @@ func _open_island_view(free_ftue: bool) -> void:
 
 
 func _on_island_closed(proceed_next: bool) -> void:
-	stage.stage_active = true
 	_refresh_top_hud()
 	if proceed_next:
+		if home_lobby:
+			home_lobby.visible = false
 		_start_level(services.current_level + 1, false)
+	else:
+		stage.stage_active = (home_lobby == null or not home_lobby.visible)
+		if home_lobby and home_lobby.visible:
+			home_lobby.refresh()
 
 
 # ==============================================================================
@@ -1797,6 +1847,16 @@ func _apply_arcade_tile_style(ctrl: Control, cid: int, tier: int, dimmed: bool) 
 			ctrl.add_child(bg_p)
 			ctrl.move_child(bg_p, 0)
 		bg_p.add_theme_stylebox_override("panel", sb)
+
+		var gloss: ColorRect = ctrl.get_node_or_null("TopGloss")
+		if gloss == null:
+			gloss = ColorRect.new()
+			gloss.name = "TopGloss"
+			gloss.anchor_left = 0.14; gloss.anchor_right = 0.86
+			gloss.anchor_top = 0.08; gloss.anchor_bottom = 0.22
+			gloss.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ctrl.add_child(gloss)
+		gloss.color = Color(1.0, 1.0, 1.0, 0.26 if tier == 0 else 0.42)
 
 
 func _apply_hidden_tile_style(tile: PanelContainer) -> void:
